@@ -1,25 +1,30 @@
 # taskforge
-A cloud-native distributed task processing platform written in Go.
+An in-process task execution platform written in Go — a prototype scaffold
+designed to evolve into a cloud-native distributed system.
 
-Taskforge is inspired by Celery, Temporal, and distributed job processing systems.
-It provides an ergonomic API for defining, enqueuing, and executing tasks across a
-pool of concurrent workers, with built-in retry logic, scheduled tasks, and a
-swappable broker / result-backend architecture.
+> **Status: prototype / work-in-progress.**  
+> Both the broker and the result backend are currently in-memory only.
+> All state is private to a single process and is lost when it exits.
+> The package interfaces (`broker.Broker`, `result.Backend`) are designed
+> so that external implementations (Redis, AMQP, …) can be swapped in
+> without changing application code.  
+> Taskforge is inspired by [Celery](https://docs.celeryq.dev),
+> [Temporal](https://temporal.io), and distributed job processing systems.
 
 ---
 
-## Features
+## Current capabilities
 
 | Feature | Details |
 |---|---|
 | **Task registry** | Name-keyed handler functions with type-safe JSON payloads |
-| **In-memory broker** | Zero-dependency, channel-backed queue with scheduled delivery |
-| **In-memory result backend** | TTL-aware result store with automatic expiry |
+| **In-memory broker** | Channel-backed queue with scheduled / delayed delivery (single-process) |
+| **In-memory result backend** | TTL-aware result store with automatic expiry (single-process) |
 | **Worker pool** | Configurable concurrency; graceful shutdown |
 | **Retry with backoff** | Per-task `RetryPolicy` with exponential backoff and a configurable cap |
 | **Periodic tasks** | Celery-Beat-style scheduler with `EverySchedule` |
 | **Per-task timeout** | Context-based deadline propagated to each handler |
-| **CLI** | `worker`, `enqueue`, `result`, and `demo` sub-commands |
+| **CLI `demo`** | Self-contained, end-to-end runnable demonstration |
 
 ---
 
@@ -38,7 +43,11 @@ pkg/taskforge/       – Public API (App, EnqueueOption helpers, …)
 
 ---
 
-## Quick start
+## Quick start (single process)
+
+The simplest way to try Taskforge is to embed the App directly — worker,
+enqueuer, and result store all share the same in-memory broker within one
+process:
 
 ```go
 package main
@@ -106,17 +115,32 @@ go app.StartScheduler(ctx)
 
 ## CLI
 
-```
-# Run the in-process demo
-taskforge demo
+### `demo` — recommended entry point
 
-# Start a worker (blocks until SIGINT/SIGTERM)
+```
+taskforge demo
+```
+
+Runs a fully self-contained, in-process demonstration: registers tasks,
+starts a worker pool and a periodic scheduler, enqueues five jobs, and
+prints the results.
+
+### Other sub-commands (scaffolding only)
+
+> **⚠ These sub-commands are scaffolding for future multi-process use.**
+> Each invocation creates its own ephemeral in-memory broker and result
+> backend, so `worker`, `enqueue`, and `result` **do not share state**
+> across separate processes. They will become useful once an external
+> broker (e.g. Redis) is wired in.
+
+```
+# Start a worker (in-process, ephemeral state — not useful cross-process yet)
 taskforge worker -concurrency 8 -queue default
 
-# Enqueue a task from the command line
+# Enqueue a task (writes to a private in-memory broker — not visible to other processes)
 taskforge enqueue -name echo -payload '{"msg":"hello"}' -delay 5s
 
-# Retrieve a result
+# Retrieve a result (reads from a private in-memory store — not shared with other processes)
 taskforge result -id <task-id>
 ```
 
@@ -127,3 +151,15 @@ taskforge result -id <task-id>
 ```
 go test ./...
 ```
+
+---
+
+## Roadmap
+
+The broker and result-backend interfaces are already defined; the next
+natural steps are:
+
+- [ ] Redis broker implementation
+- [ ] Redis result backend implementation
+- [ ] Cron expression support in the scheduler
+- [ ] Observability: structured logging, metrics, tracing

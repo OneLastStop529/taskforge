@@ -41,16 +41,20 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `
-Taskforge – cloud-native distributed task execution platform
+Taskforge – in-process task execution platform (prototype)
 
 Usage:
   taskforge <command> [flags]
 
 Commands:
-  worker    Start a worker process
-  enqueue   Enqueue a task by name
-  result    Retrieve a task result by ID
-  demo      Run a self-contained in-process demonstration
+  demo      Run a self-contained in-process demonstration (recommended)
+  worker    [scaffolding] Start an in-process worker (ephemeral, not cross-process)
+  enqueue   [scaffolding] Enqueue a task into a private in-process broker
+  result    [scaffolding] Retrieve a result from a private in-process store
+
+NOTE: worker, enqueue, and result each create their own isolated in-memory
+      broker and result backend. They do not share state across processes.
+      Use 'demo' for a fully functional end-to-end example.
 `)
 }
 
@@ -74,6 +78,7 @@ func runWorker(args []string) {
 	defer stop()
 
 	log.Printf("taskforge worker: starting (concurrency=%d queue=%s)", *concurrency, *queue)
+	log.Printf("NOTE: using in-memory broker — state is not shared with other processes; use 'demo' for a fully functional example")
 	if err := app.StartWorker(ctx); err != nil {
 		log.Fatalf("taskforge worker: %v", err)
 	}
@@ -91,6 +96,8 @@ func runEnqueue(args []string) {
 		fmt.Fprintln(os.Stderr, "enqueue: -name is required")
 		os.Exit(1)
 	}
+
+	log.Printf("NOTE: enqueue uses an ephemeral in-memory broker; the task ID printed below is not visible to any other process")
 
 	cfg := taskforge.DefaultConfig()
 	cfg.DefaultQueue = *queue
@@ -118,6 +125,8 @@ func runResult(args []string) {
 		fmt.Fprintln(os.Stderr, "result: -id is required")
 		os.Exit(1)
 	}
+
+	log.Printf("NOTE: result uses an ephemeral in-memory store; it will always return 'not found' for IDs produced by other processes")
 
 	cfg := taskforge.DefaultConfig()
 	app := taskforge.New(cfg)
