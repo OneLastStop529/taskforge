@@ -62,13 +62,31 @@ func runWorker(args []string) {
 	fs := flag.NewFlagSet("worker", flag.ExitOnError)
 	concurrency := fs.Int("concurrency", 10, "number of concurrent workers")
 	queue := fs.String("queue", "default", "queue name to consume from")
+	brokerBackend := fs.String("broker-backend", string(taskforge.BackendMemory), "broker backend: memory or redis")
+	resultBackend := fs.String("result-backend", string(taskforge.BackendMemory), "result backend: memory or redis")
+	redisAddr := fs.String("redis-addr", "127.0.0.1:6379", "Redis address")
+	redisUsername := fs.String("redis-username", "", "Redis username")
+	redisPassword := fs.String("redis-password", "", "Redis password")
+	redisDB := fs.Int("redis-db", 0, "Redis database index")
 	_ = fs.Parse(args)
 
-	cfg := taskforge.DefaultConfig()
+	cfg := cliConfig()
 	cfg.Concurrency = *concurrency
 	cfg.DefaultQueue = *queue
+	cfg.BrokerBackend = taskforge.BackendKind(*brokerBackend)
+	cfg.ResultBackend = taskforge.BackendKind(*resultBackend)
+	cfg.Redis = taskforge.RedisConfig{
+		Addr:     *redisAddr,
+		Username: *redisUsername,
+		Password: *redisPassword,
+		DB:       *redisDB,
+	}
 
-	app := taskforge.New(cfg)
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("taskforge worker: %v", err)
+	}
+	defer app.Close() //nolint:errcheck
 	// Register a simple echo handler for demonstration.
 	app.Register("echo", func(_ context.Context, payload []byte) ([]byte, error) {
 		return payload, nil
@@ -78,7 +96,9 @@ func runWorker(args []string) {
 	defer stop()
 
 	log.Printf("taskforge worker: starting (concurrency=%d queue=%s)", *concurrency, *queue)
-	log.Printf("NOTE: using in-memory broker — state is not shared with other processes; use 'demo' for a fully functional example")
+	if cfg.BrokerBackend == taskforge.BackendMemory && cfg.ResultBackend == taskforge.BackendMemory {
+		log.Printf("NOTE: using in-memory broker/result backend — state is not shared with other processes; use 'demo' for a fully functional example")
+	}
 	if err := app.StartWorker(ctx); err != nil {
 		log.Fatalf("taskforge worker: %v", err)
 	}
@@ -90,6 +110,12 @@ func runEnqueue(args []string) {
 	payload := fs.String("payload", "{}", "JSON payload")
 	queue := fs.String("queue", "default", "destination queue")
 	delay := fs.Duration("delay", 0, "delay before task runs (e.g. 5s)")
+	brokerBackend := fs.String("broker-backend", string(taskforge.BackendMemory), "broker backend: memory or redis")
+	resultBackend := fs.String("result-backend", string(taskforge.BackendMemory), "result backend: memory or redis")
+	redisAddr := fs.String("redis-addr", "127.0.0.1:6379", "Redis address")
+	redisUsername := fs.String("redis-username", "", "Redis username")
+	redisPassword := fs.String("redis-password", "", "Redis password")
+	redisDB := fs.Int("redis-db", 0, "Redis database index")
 	_ = fs.Parse(args)
 
 	if *name == "" {
@@ -97,11 +123,23 @@ func runEnqueue(args []string) {
 		os.Exit(1)
 	}
 
-	log.Printf("NOTE: enqueue uses an ephemeral in-memory broker; the task ID printed below is not visible to any other process")
-
-	cfg := taskforge.DefaultConfig()
+	cfg := cliConfig()
 	cfg.DefaultQueue = *queue
-	app := taskforge.New(cfg)
+	cfg.BrokerBackend = taskforge.BackendKind(*brokerBackend)
+	cfg.ResultBackend = taskforge.BackendKind(*resultBackend)
+	cfg.Redis = taskforge.RedisConfig{
+		Addr:     *redisAddr,
+		Username: *redisUsername,
+		Password: *redisPassword,
+		DB:       *redisDB,
+	}
+	if cfg.BrokerBackend == taskforge.BackendMemory && cfg.ResultBackend == taskforge.BackendMemory {
+		log.Printf("NOTE: enqueue uses an ephemeral in-memory broker/result backend; the task ID printed below is not visible to any other process")
+	}
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("enqueue: %v", err)
+	}
 	defer app.Close() //nolint:errcheck
 
 	ctx := context.Background()
@@ -119,6 +157,12 @@ func runEnqueue(args []string) {
 func runResult(args []string) {
 	fs := flag.NewFlagSet("result", flag.ExitOnError)
 	id := fs.String("id", "", "task ID (required)")
+	brokerBackend := fs.String("broker-backend", string(taskforge.BackendMemory), "broker backend: memory or redis")
+	resultBackend := fs.String("result-backend", string(taskforge.BackendMemory), "result backend: memory or redis")
+	redisAddr := fs.String("redis-addr", "127.0.0.1:6379", "Redis address")
+	redisUsername := fs.String("redis-username", "", "Redis username")
+	redisPassword := fs.String("redis-password", "", "Redis password")
+	redisDB := fs.Int("redis-db", 0, "Redis database index")
 	_ = fs.Parse(args)
 
 	if *id == "" {
@@ -126,10 +170,22 @@ func runResult(args []string) {
 		os.Exit(1)
 	}
 
-	log.Printf("NOTE: result uses an ephemeral in-memory store; it will always return 'not found' for IDs produced by other processes")
-
-	cfg := taskforge.DefaultConfig()
-	app := taskforge.New(cfg)
+	cfg := cliConfig()
+	cfg.BrokerBackend = taskforge.BackendKind(*brokerBackend)
+	cfg.ResultBackend = taskforge.BackendKind(*resultBackend)
+	cfg.Redis = taskforge.RedisConfig{
+		Addr:     *redisAddr,
+		Username: *redisUsername,
+		Password: *redisPassword,
+		DB:       *redisDB,
+	}
+	if cfg.BrokerBackend == taskforge.BackendMemory && cfg.ResultBackend == taskforge.BackendMemory {
+		log.Printf("NOTE: result uses an ephemeral in-memory store; it will always return 'not found' for IDs produced by other processes")
+	}
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("result: %v", err)
+	}
 	defer app.Close() //nolint:errcheck
 
 	ctx := context.Background()
@@ -143,9 +199,9 @@ func runResult(args []string) {
 }
 
 func runDemo() {
-	cfg := taskforge.DefaultConfig()
+	cfg := cliConfig()
 	cfg.Concurrency = 4
-	app := taskforge.New(cfg)
+	app := taskforge.NewMemory(cfg)
 	defer app.Close() //nolint:errcheck
 
 	// Register a few tasks.
@@ -205,4 +261,8 @@ func runDemo() {
 		fmt.Printf("  %s [%s]: %s\n", id, r.State, string(r.Output))
 	}
 	fmt.Println()
+}
+
+func cliConfig() taskforge.Config {
+	return taskforge.DefaultConfig()
 }

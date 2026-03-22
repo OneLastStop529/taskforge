@@ -175,3 +175,39 @@ func TestApp_UnknownTaskFails(t *testing.T) {
 		t.Errorf("expected FAILED for unknown task, got %v", r)
 	}
 }
+
+func TestDefaultConfig_UsesMemoryBackends(t *testing.T) {
+	cfg := taskforge.DefaultConfig()
+
+	if cfg.BrokerBackend != taskforge.BackendMemory {
+		t.Fatalf("expected memory broker backend, got %q", cfg.BrokerBackend)
+	}
+	if cfg.ResultBackend != taskforge.BackendMemory {
+		t.Fatalf("expected memory result backend, got %q", cfg.ResultBackend)
+	}
+	if cfg.Redis.Addr == "" {
+		t.Fatal("expected default redis address to be set")
+	}
+}
+
+func TestOpen_InvalidConfig(t *testing.T) {
+	cfg := taskforge.DefaultConfig()
+	cfg.DefaultQueue = ""
+
+	_, err := taskforge.Open(cfg)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestOpen_RedisBackendsConstruct(t *testing.T) {
+	cfg := taskforge.DefaultConfig()
+	cfg.BrokerBackend = taskforge.BackendRedis
+	cfg.ResultBackend = taskforge.BackendRedis
+
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer app.Close() //nolint:errcheck
+}

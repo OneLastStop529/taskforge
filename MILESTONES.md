@@ -133,7 +133,31 @@ Architecture:
 API -> Broker -> Worker -> Result Store
 ```
 
-Status: `TODO (HIGH PRIORITY)`
+Delivered:
+
+- Redis-backed broker with ready queues, delayed queues, in-flight reservation,
+  `Ack`, and lease-expiry recovery
+- Redis-backed result backend with shared cross-process result reads/writes
+- backend-selection/config plumbing while keeping in-memory as the default path
+- CLI flags for backend selection and Redis connection settings
+- integration coverage using separate app instances against a live Redis server
+- reproducible local Redis setup via `compose.yml`, `Makefile`, and README docs
+
+Acceptance criteria status:
+
+- [x] a task enqueued by one process can be consumed by a different worker process
+- [x] `result` can read task state written by a different worker process
+- [x] delayed tasks survive worker restarts
+- [x] the in-memory implementations still pass the existing unit tests
+- [ ] failed tasks retain enough metadata to support DLQ inspection next
+
+Follow-on work:
+
+- DLQ storage and inspection remain part of milestone 6 follow-through
+- PostgreSQL and NATS remain deferred
+- observability and health endpoints remain later-phase work
+
+Status: `DONE`
 
 ### Milestone 8: Idempotency
 

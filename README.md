@@ -4,15 +4,14 @@ Taskforge is a Go prototype for in-process background job execution. It gives
 you a task registry, worker pool, delayed jobs, retries, periodic schedules,
 and result tracking behind a small API.
 
-The current implementation is intentionally simple: broker state and task
-results live in memory inside a single process. When the process exits, all
-state is lost.
+The project now supports both in-memory and Redis-backed broker/result
+components. The in-memory path is still the default for the demo and most unit
+tests; Redis is used for cross-process integration tests and persistent broker
+development.
 
 > Status: prototype / work-in-progress.
->
-> The extension points are already in place (`broker.Broker`,
-> `result.Backend`), but only the in-memory implementations exist today.
-> Multi-process workflows are scaffolded, not finished.
+> Redis-backed multi-process execution now exists behind the backend
+> abstractions, but the CLI and local developer workflow are still evolving.
 
 Taskforge is influenced by [Celery](https://docs.celeryq.dev),
 [Temporal](https://temporal.io), and similar job-processing systems.
@@ -24,6 +23,8 @@ Taskforge is influenced by [Celery](https://docs.celeryq.dev),
 | Task registry | Name-based handlers with JSON payloads |
 | In-memory broker | Queueing plus delayed delivery in one process |
 | In-memory result backend | Result persistence with TTL expiry |
+| Redis broker | Shared ready/delayed queues with in-flight reservation recovery |
+| Redis result backend | Shared cross-process task result storage |
 | Worker pool | Configurable concurrency and graceful shutdown |
 | Retry policy | Exponential backoff with max-attempt controls |
 | Periodic tasks | Interval scheduling via `EverySchedule` |
@@ -65,13 +66,31 @@ go build -o bin/taskforge ./cmd/taskforge
 go test ./...
 ```
 
-## The Important Constraint
+### 4. Start local Redis for integration work
 
-The `demo` command is the only fully useful CLI path right now.
+```bash
+docker compose up -d redis
+```
 
-The other commands exist as scaffolding for a future external broker/result
-backend. Each invocation creates its own isolated in-memory state, so these do
-not communicate across separate processes:
+Then run the Redis integration tests:
+
+```bash
+go test ./pkg/taskforge -run RedisIntegration -v
+```
+
+Environment overrides:
+
+- `TASKFORGE_REDIS_ADDR` defaults to `127.0.0.1:6379`
+- `TASKFORGE_REDIS_DB` defaults to `15`
+
+## CLI Status
+
+The `demo` command is still the fastest fully self-contained path.
+
+The CLI now accepts backend-selection flags for `worker`, `enqueue`, and
+`result`. If you leave the defaults in place, each invocation creates its own
+isolated in-memory state. Those processes do not communicate across process
+boundaries:
 
 ```bash
 ./bin/taskforge worker
@@ -79,16 +98,16 @@ not communicate across separate processes:
 ./bin/taskforge result -id <task-id>
 ```
 
-That means:
+That means, with default memory settings:
 
 - `worker` cannot consume tasks created by a separate `enqueue` process
 - `result` cannot see results created by a separate worker process
-- for real end-to-end behavior today, use `demo` or embed the library in one process
+- for real end-to-end shared-state behavior, configure Redis-backed broker and result backends
 
 ## Using It As a Library
 
-For actual experimentation, embed Taskforge directly so the app, worker, and
-result backend share the same in-memory state.
+For in-process experimentation, embed Taskforge directly so the app, worker,
+and result backend share the same in-memory state.
 
 ```go
 package main
@@ -179,7 +198,7 @@ pkg/taskforge/       Public API
 
 ## Roadmap
 
-- [ ] Redis broker implementation
-- [ ] Redis result backend implementation
+- [x] Redis broker implementation
+- [x] Redis result backend implementation
 - [ ] Cron expression support in the scheduler
 - [ ] Observability: structured logging, metrics, tracing

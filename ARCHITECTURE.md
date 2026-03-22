@@ -627,6 +627,8 @@ The current highest-priority architectural step is persistence.
 
 #### Milestone 7: Persistence Layer
 
+Status: implemented for the Redis path.
+
 Recommended implementation order:
 
 - introduce Redis-backed broker
@@ -637,6 +639,75 @@ Recommended implementation order:
 
 This milestone turns Taskforge from a runtime demo into a real multi-process
 system.
+
+Implemented shape:
+
+- `pkg/taskforge.Config` now supports backend selection and Redis connection
+  settings
+- `internal/result.RedisBackend` provides shared result storage across app
+  instances
+- `internal/broker.RedisBroker` provides ready queues, delayed queues,
+  in-flight reservation, `Ack`, and lease-expiry recovery
+- live Redis integration tests verify separate app instances can enqueue,
+  process, and read results through shared state
+
+Planning notes that remain useful for follow-on milestones:
+
+- `internal/broker` already defines the transport boundary; add `RedisBroker`
+  beside `MemoryBroker` rather than changing the interface first
+- `internal/result` already defines the result storage boundary; add
+  `RedisBackend` with the same `SetResult` and `GetResult` contract
+- `pkg/taskforge.App` currently hardwires memory backends in `New`; add config
+  and constructors so backend selection happens at app construction time
+- `internal/worker` can stay mostly unchanged if broker dequeue semantics remain
+  blocking and retries continue to be represented as re-enqueued `task.Message`
+- `internal/task.Message` already contains retry and scheduling metadata, so the
+  first persistence pass should preserve this schema and avoid a larger task
+  model redesign
+
+Recommended scope split:
+
+1. Wiring
+
+- extend `taskforge.Config` with backend choice and Redis connection settings
+- add constructors for memory and Redis-backed apps
+- keep the current default as in-memory so existing tests and examples stay
+  stable
+
+2. Redis result backend
+
+- store results by task ID
+- preserve TTL behavior where configured
+- support `PENDING`, `RUNNING`, `RETRYING`, `SUCCESS`, and `FAILED` states
+- ensure serialized results are readable across separate processes
+
+3. Redis broker
+
+- immediate queue for ready tasks
+- delayed queue or sorted-set schedule for future tasks
+- blocking dequeue for workers
+- explicit ack path, even if the first Redis implementation uses a simpler
+  reservation model
+
+4. Retry and failure durability
+
+- persist incremented attempt counts in the broker payload
+- keep failure error text and timestamps in the result backend
+- leave a clear hook for moving terminal failures into a DLQ keyspace
+
+5. Verification
+
+- add integration coverage for separate enqueue, worker, and result app
+  instances sharing Redis
+- verify delayed tasks and retries continue after worker restart
+- document the operational constraint shift in `README.md`
+
+Non-goals for the first milestone 7 cut:
+
+- PostgreSQL and NATS support
+- metrics and health endpoints
+- full DLQ inspection CLI
+- task deduplication and locking
 
 ## 15. Summary
 

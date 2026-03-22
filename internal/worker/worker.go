@@ -152,7 +152,8 @@ func (w *Worker) finalize(ctx context.Context, msg *task.Message, r *task.Result
 		retry := *msg
 		retry.Attempt = nextAttempt
 		retry.ScheduledAt = time.Now().Add(delay)
-		_ = w.broker.Nack(ctx, &retry)
+		_ = w.broker.Ack(ctx, msg)
+		_ = w.broker.Enqueue(ctx, &retry)
 		return
 	}
 

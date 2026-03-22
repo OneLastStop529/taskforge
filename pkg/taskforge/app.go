@@ -30,6 +30,14 @@ import (
 	"github.com/OneLastStop529/taskforge/internal/worker"
 )
 
+// BackendKind identifies the broker/result backend implementation to use.
+type BackendKind string
+
+const (
+	BackendMemory BackendKind = "memory"
+	BackendRedis  BackendKind = "redis"
+)
+
 // HandlerFunc is the user-facing task handler signature.
 type HandlerFunc = task.HandlerFunc
 
@@ -58,6 +66,20 @@ type Config struct {
 	ResultTTL time.Duration
 	// DefaultRetryPolicy is applied to all tasks unless overridden per-enqueue.
 	DefaultRetryPolicy task.RetryPolicy
+	// BrokerBackend selects the task transport implementation.
+	BrokerBackend BackendKind
+	// ResultBackend selects the task result storage implementation.
+	ResultBackend BackendKind
+	// Redis contains connection settings for Redis-backed components.
+	Redis RedisConfig
+}
+
+// RedisConfig holds Redis connection settings for future persistent backends.
+type RedisConfig struct {
+	Addr     string
+	Username string
+	Password string
+	DB       int
 }
 
 // DefaultConfig returns a sensible out-of-the-box Config.
@@ -67,6 +89,34 @@ func DefaultConfig() Config {
 		Concurrency:        10,
 		ResultTTL:          24 * time.Hour,
 		DefaultRetryPolicy: task.DefaultRetryPolicy(),
+		BrokerBackend:      BackendMemory,
+		ResultBackend:      BackendMemory,
+		Redis: RedisConfig{
+			Addr: "127.0.0.1:6379",
+		},
+	}
+}
+
+// Validate checks whether the config is internally consistent.
+func (c Config) Validate() error {
+	if c.DefaultQueue == "" {
+		return fmt.Errorf("taskforge: default queue must not be empty")
+	}
+	if err := validateBackendKind("broker backend", c.BrokerBackend); err != nil {
+		return err
+	}
+	if err := validateBackendKind("result backend", c.ResultBackend); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateBackendKind(name string, kind BackendKind) error {
+	switch kind {
+	case BackendMemory, BackendRedis:
+		return nil
+	default:
+		return fmt.Errorf("taskforge: unsupported %s %q", name, kind)
 	}
 }
 
@@ -112,10 +162,42 @@ type App struct {
 	scheduler *scheduler.Scheduler
 }
 
-// New creates a new Taskforge App backed by an in-memory broker and result backend.
+// New creates a new Taskforge App using the configured broker and result backends.
+// It panics if the config is invalid or selects an unavailable backend.
 func New(cfg Config) *App {
-	b := broker.NewMemoryBroker()
-	be := result.NewMemoryBackend(cfg.ResultTTL)
+	app, err := Open(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return app
+}
+
+// Open creates a new Taskforge App using the configured broker and result backends.
+func Open(cfg Config) (*App, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	b, err := buildBroker(cfg)
+	if err != nil {
+		return nil, err
+	}
+	be, err := buildResultBackend(cfg)
+	if err != nil {
+		_ = b.Close()
+		return nil, err
+	}
+	return newApp(cfg, b, be), nil
+}
+
+// NewMemory creates a new Taskforge App backed by the in-memory implementations.
+func NewMemory(cfg Config) *App {
+	cfg.BrokerBackend = BackendMemory
+	cfg.ResultBackend = BackendMemory
+	return New(cfg)
+}
+
+func newApp(cfg Config, b broker.Broker, be result.Backend) *App {
 	reg := task.NewRegistry()
 	a := &App{
 		cfg:      cfg,
@@ -125,6 +207,38 @@ func New(cfg Config) *App {
 	}
 	a.scheduler = scheduler.New(a.dispatchMsg, newID, nil)
 	return a
+}
+
+func buildBroker(cfg Config) (broker.Broker, error) {
+	switch cfg.BrokerBackend {
+	case BackendMemory:
+		return broker.NewMemoryBroker(), nil
+	case BackendRedis:
+		return broker.NewRedisBroker(broker.RedisConfig{
+			Addr:     cfg.Redis.Addr,
+			Username: cfg.Redis.Username,
+			Password: cfg.Redis.Password,
+			DB:       cfg.Redis.DB,
+		})
+	default:
+		return nil, fmt.Errorf("taskforge: unsupported broker backend %q", cfg.BrokerBackend)
+	}
+}
+
+func buildResultBackend(cfg Config) (result.Backend, error) {
+	switch cfg.ResultBackend {
+	case BackendMemory:
+		return result.NewMemoryBackend(cfg.ResultTTL), nil
+	case BackendRedis:
+		return result.NewRedisBackend(result.RedisConfig{
+			Addr:     cfg.Redis.Addr,
+			Username: cfg.Redis.Username,
+			Password: cfg.Redis.Password,
+			DB:       cfg.Redis.DB,
+		}, cfg.ResultTTL)
+	default:
+		return nil, fmt.Errorf("taskforge: unsupported result backend %q", cfg.ResultBackend)
+	}
 }
 
 // Register binds a task name to a handler function.
