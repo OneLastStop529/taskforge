@@ -176,6 +176,66 @@ func TestApp_UnknownTaskFails(t *testing.T) {
 	}
 }
 
+func TestApp_ReplayDLQEntry(t *testing.T) {
+	cfg := taskforge.DefaultConfig()
+	cfg.Concurrency = 1
+	cfg.DefaultRetryPolicy.MaxAttempts = 1
+	app := taskforge.New(cfg)
+	defer app.Close() //nolint:errcheck
+
+	shouldFail := true
+	app.Register("flaky_once", func(_ context.Context, payload []byte) ([]byte, error) {
+		if shouldFail {
+			return nil, context.DeadlineExceeded
+		}
+		return payload, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = app.StartWorker(ctx) }()
+
+	originalID, err := app.Enqueue(ctx, "flaky_once", map[string]string{"msg": "retry me"})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	var failed *taskforge.Result
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		failed, _ = app.GetResult(ctx, originalID)
+		if failed != nil && failed.State == taskforge.StateFailed {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if failed == nil || failed.State != taskforge.StateFailed {
+		t.Fatalf("expected original task to fail, got %v", failed)
+	}
+
+	shouldFail = false
+	replayID, err := app.ReplayDLQEntry(ctx, originalID)
+	if err != nil {
+		t.Fatalf("ReplayDLQEntry: %v", err)
+	}
+	if replayID == originalID {
+		t.Fatal("expected replay to allocate a new task ID")
+	}
+
+	var replayed *taskforge.Result
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		replayed, _ = app.GetResult(ctx, replayID)
+		if replayed != nil && replayed.State == taskforge.StateSuccess {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if replayed == nil || replayed.State != taskforge.StateSuccess {
+		t.Fatalf("expected replayed task to succeed, got %v", replayed)
+	}
+}
+
 func TestDefaultConfig_UsesMemoryBackends(t *testing.T) {
 	cfg := taskforge.DefaultConfig()
 
@@ -184,6 +244,9 @@ func TestDefaultConfig_UsesMemoryBackends(t *testing.T) {
 	}
 	if cfg.ResultBackend != taskforge.BackendMemory {
 		t.Fatalf("expected memory result backend, got %q", cfg.ResultBackend)
+	}
+	if cfg.DLQBackend != taskforge.BackendMemory {
+		t.Fatalf("expected memory dlq backend, got %q", cfg.DLQBackend)
 	}
 	if cfg.Redis.Addr == "" {
 		t.Fatal("expected default redis address to be set")
@@ -204,6 +267,7 @@ func TestOpen_RedisBackendsConstruct(t *testing.T) {
 	cfg := taskforge.DefaultConfig()
 	cfg.BrokerBackend = taskforge.BackendRedis
 	cfg.ResultBackend = taskforge.BackendRedis
+	cfg.DLQBackend = taskforge.BackendRedis
 
 	app, err := taskforge.Open(cfg)
 	if err != nil {

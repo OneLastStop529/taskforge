@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	taskredis "github.com/OneLastStop529/taskforge/internal/redis"
 	"github.com/OneLastStop529/taskforge/internal/result"
 	"github.com/OneLastStop529/taskforge/internal/task"
 )
@@ -111,7 +112,9 @@ func TestNewRedisBackend_RequiresAddr(t *testing.T) {
 }
 
 func TestNewRedisBackend_ConstructsClient(t *testing.T) {
-	be, err := result.NewRedisBackend(result.RedisConfig{Addr: "127.0.0.1:6379"}, time.Minute)
+	be, err := result.NewRedisBackend(result.RedisConfig{
+		Connection: taskredis.Config{Addr: "127.0.0.1:6379"},
+	}, time.Minute)
 	if err != nil {
 		t.Fatalf("NewRedisBackend: %v", err)
 	}

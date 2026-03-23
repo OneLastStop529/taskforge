@@ -6,16 +6,14 @@ import (
 	"fmt"
 	"time"
 
+	taskredis "github.com/OneLastStop529/taskforge/internal/redis"
 	"github.com/OneLastStop529/taskforge/internal/task"
 	redis "github.com/redis/go-redis/v9"
 )
 
 // RedisConfig holds the connection settings for a Redis-backed broker.
 type RedisConfig struct {
-	Addr                  string
-	Username              string
-	Password              string
-	DB                    int
+	Connection            taskredis.Config
 	ReadyQueuePrefix      string
 	DelayedQueuePrefix    string
 	ProcessingQueuePrefix string
@@ -131,15 +129,10 @@ func (c *goRedisClient) Close() error {
 
 // NewRedisBroker creates a RedisBroker from connection config.
 func NewRedisBroker(cfg RedisConfig) (*RedisBroker, error) {
-	if cfg.Addr == "" {
-		return nil, fmt.Errorf("taskforge: redis address must not be empty")
+	client, err := taskredis.NewClient(cfg.Connection)
+	if err != nil {
+		return nil, err
 	}
-	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Username: cfg.Username,
-		Password: cfg.Password,
-		DB:       cfg.DB,
-	})
 	return NewRedisBrokerWithClient(&goRedisClient{client: client}, cfg), nil
 }
 

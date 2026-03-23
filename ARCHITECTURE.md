@@ -621,9 +621,70 @@ stages.
 
 ## 14. Near-Term Priorities
 
-The current highest-priority architectural step is persistence.
+Persistence is now implemented for the Redis path.
 
 ### Next recommended milestone
+
+#### Milestone 6: Dead Letter Queue
+
+Status: implemented for memory and Redis backends.
+
+Why this is the highest-ROI next step:
+
+- the Redis broker and result backend already preserve shared state
+- retries are implemented, so the next gap is operator handling of permanent
+  failure
+- DLQ support improves reliability immediately without forcing a larger
+  execution-model redesign
+
+Implemented milestone 6 shape:
+
+1. Add a DLQ storage boundary
+
+- introduce a dedicated interface for DLQ persistence and inspection rather
+  than folding dead-letter data into the broker API
+- keep broker responsibilities focused on delivery and reservation semantics
+- keep result backend responsibilities focused on latest task outcome lookup
+
+2. Define the first DLQ entry shape
+
+- store the original `task.Message` payload so operators can inspect what ran
+- add final failure fields such as terminal error text, exhausted attempt
+  number, and failure time
+- include queue and retry policy metadata so later replay tooling does not need
+  to reconstruct context from logs
+
+3. Wire worker finalization to DLQ persistence
+
+- on success: write `SUCCESS` result and ack as today
+- on retryable failure: write `RETRYING`, re-enqueue, and do not touch the DLQ
+- on retry exhaustion: write the terminal result, persist the DLQ entry, then
+  ack the broker reservation
+
+4. Expose operator inspection and replay surfaces
+
+- add library methods to list DLQ entry IDs and fetch a single entry
+- add CLI inspection commands once the library contract is stable
+- support replay by re-enqueuing the stored task envelope under a fresh task ID
+- defer replay-resolution metadata, bulk purge, and richer requeue workflows
+
+5. Verify with the existing Redis integration model
+
+- reuse the separate producer / worker / inspector app pattern already used for
+  Redis result integration tests
+- prove terminal failures become visible to another process through the DLQ
+  backend
+- prove successful and still-retrying tasks never produce DLQ entries
+- prove a different process can replay a DLQ entry through shared Redis state
+
+Key design choices in the current cut:
+
+- keep the public task result state as `FAILED` on terminal failure and treat
+  the DLQ as an additional inspection record, not a replacement result path
+- replay allocates a new task ID instead of mutating the terminally failed task
+- retain the original DLQ record after replay for audit and inspection
+- defer introducing a public `DEAD_LETTERED` runtime state until the project
+  needs distinct operator semantics beyond terminal failure lookup
 
 #### Milestone 7: Persistence Layer
 

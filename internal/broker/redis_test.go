@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/OneLastStop529/taskforge/internal/broker"
+	taskredis "github.com/OneLastStop529/taskforge/internal/redis"
 	"github.com/OneLastStop529/taskforge/internal/task"
 )
 
@@ -247,7 +248,9 @@ func TestNewRedisBroker_RequiresAddr(t *testing.T) {
 }
 
 func TestNewRedisBroker_ConstructsClient(t *testing.T) {
-	b, err := broker.NewRedisBroker(broker.RedisConfig{Addr: "127.0.0.1:6379"})
+	b, err := broker.NewRedisBroker(broker.RedisConfig{
+		Connection: taskredis.Config{Addr: "127.0.0.1:6379"},
+	})
 	if err != nil {
 		t.Fatalf("NewRedisBroker: %v", err)
 	}

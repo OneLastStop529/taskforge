@@ -3,12 +3,9 @@ package taskforge_test
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"strconv"
+	"sync"
 	"testing"
 	"time"
-
-	redis "github.com/redis/go-redis/v9"
 
 	"github.com/OneLastStop529/taskforge/pkg/taskforge"
 )
@@ -17,22 +14,13 @@ func TestRedisIntegration_EnqueueWorkerResultAcrossApps(t *testing.T) {
 	cfg, cleanup := redisTestConfig(t)
 	defer cleanup()
 
-	workerApp, err := taskforge.Open(cfg)
-	if err != nil {
-		t.Fatalf("Open worker app: %v", err)
-	}
+	workerApp := openRedisApp(t, cfg, "worker")
 	defer workerApp.Close() //nolint:errcheck
 
-	producerApp, err := taskforge.Open(cfg)
-	if err != nil {
-		t.Fatalf("Open producer app: %v", err)
-	}
+	producerApp := openRedisApp(t, cfg, "producer")
 	defer producerApp.Close() //nolint:errcheck
 
-	resultApp, err := taskforge.Open(cfg)
-	if err != nil {
-		t.Fatalf("Open result app: %v", err)
-	}
+	resultApp := openRedisApp(t, cfg, "result")
 	defer resultApp.Close() //nolint:errcheck
 
 	workerApp.Register("double", func(_ context.Context, payload []byte) ([]byte, error) {
@@ -69,28 +57,16 @@ func TestRedisIntegration_DelayedTaskSurvivesWorkerRestart(t *testing.T) {
 	cfg, cleanup := redisTestConfig(t)
 	defer cleanup()
 
-	worker1, err := taskforge.Open(cfg)
-	if err != nil {
-		t.Fatalf("Open worker1: %v", err)
-	}
+	worker1 := openRedisApp(t, cfg, "worker1")
 	defer worker1.Close() //nolint:errcheck
 
-	worker2, err := taskforge.Open(cfg)
-	if err != nil {
-		t.Fatalf("Open worker2: %v", err)
-	}
+	worker2 := openRedisApp(t, cfg, "worker2")
 	defer worker2.Close() //nolint:errcheck
 
-	producerApp, err := taskforge.Open(cfg)
-	if err != nil {
-		t.Fatalf("Open producer: %v", err)
-	}
+	producerApp := openRedisApp(t, cfg, "producer")
 	defer producerApp.Close() //nolint:errcheck
 
-	resultApp, err := taskforge.Open(cfg)
-	if err != nil {
-		t.Fatalf("Open result app: %v", err)
-	}
+	resultApp := openRedisApp(t, cfg, "result")
 	defer resultApp.Close() //nolint:errcheck
 
 	handler := func(_ context.Context, payload []byte) ([]byte, error) {
@@ -128,68 +104,115 @@ func TestRedisIntegration_DelayedTaskSurvivesWorkerRestart(t *testing.T) {
 	}
 }
 
-func redisTestConfig(t *testing.T) (taskforge.Config, func()) {
-	t.Helper()
+func TestRedisIntegration_DLQVisibleAcrossApps(t *testing.T) {
+	cfg, cleanup := redisTestConfig(t)
+	defer cleanup()
 
-	addr := os.Getenv("TASKFORGE_REDIS_ADDR")
-	if addr == "" {
-		addr = "127.0.0.1:6379"
-	}
+	workerApp := openRedisApp(t, cfg, "worker")
+	defer workerApp.Close() //nolint:errcheck
 
-	db := 15
-	if raw := os.Getenv("TASKFORGE_REDIS_DB"); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil {
-			t.Fatalf("invalid TASKFORGE_REDIS_DB: %v", err)
-		}
-		db = parsed
-	}
+	producerApp := openRedisApp(t, cfg, "producer")
+	defer producerApp.Close() //nolint:errcheck
 
-	client := redis.NewClient(&redis.Options{Addr: addr, DB: db})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	inspectorApp := openRedisApp(t, cfg, "inspector")
+	defer inspectorApp.Close() //nolint:errcheck
+
+	workerApp.Register("always_fail", func(_ context.Context, _ []byte) ([]byte, error) {
+		return nil, context.DeadlineExceeded
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := client.Ping(ctx).Err(); err != nil {
-		_ = client.Close()
-		t.Skipf("redis unavailable at %s db=%d: %v", addr, db, err)
-	}
-	if err := client.FlushDB(ctx).Err(); err != nil {
-		_ = client.Close()
-		t.Fatalf("FlushDB before test: %v", err)
+	go func() { _ = workerApp.StartWorker(ctx) }()
+
+	id, err := producerApp.Enqueue(ctx, "always_fail", nil)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
 	}
 
-	cfg := taskforge.DefaultConfig()
-	cfg.BrokerBackend = taskforge.BackendRedis
-	cfg.ResultBackend = taskforge.BackendRedis
-	cfg.Redis.Addr = addr
-	cfg.Redis.DB = db
-	cfg.Concurrency = 1
-	cfg.DefaultRetryPolicy.InitialDelay = 20 * time.Millisecond
-	cfg.DefaultRetryPolicy.Multiplier = 1.0
-
-	cleanup := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = client.FlushDB(ctx).Err()
-		_ = client.Close()
+	r := waitForResult(t, inspectorApp, id, func(r *taskforge.Result) bool {
+		return r.State == taskforge.StateFailed
+	})
+	if r.State != taskforge.StateFailed {
+		t.Fatalf("got result state %s, want FAILED", r.State)
 	}
-	return cfg, cleanup
+
+	entry := waitForDLQEntry(t, inspectorApp, id)
+	if entry.ID != id {
+		t.Fatalf("got dlq id %q, want %q", entry.ID, id)
+	}
+	if entry.Result.Error == "" {
+		t.Fatal("expected dlq result error to be populated")
+	}
+
+	ids, err := inspectorApp.ListDLQEntries(context.Background(), 0, 10)
+	if err != nil {
+		t.Fatalf("ListDLQEntries: %v", err)
+	}
+	if len(ids) == 0 || ids[0] != id {
+		t.Fatalf("got dlq ids %v, want first id %q", ids, id)
+	}
 }
 
-func waitForResult(t *testing.T, app *taskforge.App, id string, done func(*taskforge.Result) bool) *taskforge.Result {
-	t.Helper()
+func TestRedisIntegration_ReplayDLQEntryAcrossApps(t *testing.T) {
+	cfg, cleanup := redisTestConfig(t)
+	defer cleanup()
 
-	deadline := time.Now().Add(4 * time.Second)
-	var last *taskforge.Result
-	for time.Now().Before(deadline) {
-		r, err := app.GetResult(context.Background(), id)
-		if err == nil {
-			last = r
-			if done(r) {
-				return r
-			}
+	workerApp := openRedisApp(t, cfg, "worker")
+	defer workerApp.Close() //nolint:errcheck
+
+	producerApp := openRedisApp(t, cfg, "producer")
+	defer producerApp.Close() //nolint:errcheck
+
+	inspectorApp := openRedisApp(t, cfg, "inspector")
+	defer inspectorApp.Close() //nolint:errcheck
+
+	var mu sync.Mutex
+	shouldFail := true
+	workerApp.Register("toggle_fail", func(_ context.Context, payload []byte) ([]byte, error) {
+		mu.Lock()
+		fail := shouldFail
+		shouldFail = false
+		mu.Unlock()
+		if fail {
+			return nil, context.DeadlineExceeded
 		}
-		time.Sleep(25 * time.Millisecond)
+		return payload, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = workerApp.StartWorker(ctx) }()
+
+	originalID, err := producerApp.Enqueue(ctx, "toggle_fail", map[string]string{"msg": "hello"})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
 	}
-	t.Fatalf("timed out waiting for result %s, last=%v", id, last)
-	return nil
+
+	failed := waitForResult(t, inspectorApp, originalID, func(r *taskforge.Result) bool {
+		return r.State == taskforge.StateFailed
+	})
+	if failed.State != taskforge.StateFailed {
+		t.Fatalf("got result state %s, want FAILED", failed.State)
+	}
+
+	replayID, err := inspectorApp.ReplayDLQEntry(context.Background(), originalID)
+	if err != nil {
+		t.Fatalf("ReplayDLQEntry: %v", err)
+	}
+	if replayID == originalID {
+		t.Fatal("expected replay to allocate a new task ID")
+	}
+
+	replayed := waitForResult(t, inspectorApp, replayID, func(r *taskforge.Result) bool {
+		return r.State == taskforge.StateSuccess
+	})
+
+	var payload map[string]string
+	if err := json.Unmarshal(replayed.Output, &payload); err != nil {
+		t.Fatalf("unmarshal replay output: %v", err)
+	}
+	if payload["msg"] != "hello" {
+		t.Fatalf("got payload %v, want hello", payload)
+	}
 }

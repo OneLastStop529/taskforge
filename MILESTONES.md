@@ -114,8 +114,78 @@ Features:
 - max retry limit
 - DLQ storage
 - DLQ inspection
+- DLQ replay
 
-Status: `TODO`
+Recommended order of action:
+
+1. persist terminally failed task envelopes in a Redis DLQ keyspace
+2. include final failure metadata needed for inspection and replay decisions
+3. add library APIs to list and fetch DLQ entries across app instances
+4. add CLI inspection support for Redis-backed DLQ state
+5. add tests covering retry exhaustion, DLQ persistence, and cross-process reads
+
+Why this comes next:
+
+- persistence is now in place, so failure state can be shared across processes
+- retries already exist, so DLQ closes the reliability loop with immediate
+  operator value
+- it creates a clean foundation for later idempotency and observability work
+
+Delivered:
+
+- dedicated DLQ storage boundary with memory and Redis backends
+- terminal-failure persistence from the worker on retry exhaustion
+- library APIs to fetch, list, and replay DLQ entries
+- CLI support for `dlq list`, `dlq get`, and `dlq replay`
+- unit and Redis integration coverage for DLQ persistence, inspection, and replay
+
+Proposed scope split:
+
+1. DLQ model
+
+- define a DLQ entry that captures the original task envelope, final error,
+  queue, final attempt count, retry policy, and failure timestamps
+- decide whether the result backend continues to expose terminal tasks as
+  `FAILED` while the DLQ tracks inspection state separately
+
+2. Storage boundary
+
+- introduce a library boundary for writing, listing, and fetching DLQ entries
+- keep this separate from broker delivery concerns so inspection works even if
+  queue mechanics evolve later
+
+3. Worker integration
+
+- on retry exhaustion, persist the final result as today and also write a DLQ
+  entry before acking the broker reservation
+- treat DLQ persistence failure as operationally significant and log it clearly
+
+4. API and CLI
+
+- expose app/library methods for listing DLQ IDs and fetching a DLQ entry
+- add CLI commands or subcommands for DLQ inspection against Redis-backed state
+
+5. Verification
+
+- cover retry exhaustion in unit tests around worker finalization
+- add Redis integration coverage for cross-process DLQ inspection
+- verify successful tasks and retryable failures do not create DLQ entries
+
+Acceptance criteria:
+
+- [x] a task that exhausts retries is persisted to the DLQ exactly once
+- [x] the DLQ entry contains enough metadata to explain why retries stopped
+- [x] a different process can list and inspect the DLQ entry through Redis
+- [x] successful tasks and still-retrying tasks never appear in the DLQ
+- [x] the existing `result` path still reports terminal state for the task ID
+
+Notes:
+
+- replay currently re-enqueues the dead-lettered task under a fresh task ID
+- the original DLQ record is retained for audit and inspection
+- replay-resolution metadata and purge workflows remain deferred
+
+Status: `DONE`
 
 ### Milestone 7: Persistence Layer ⭐
 
@@ -149,11 +219,11 @@ Acceptance criteria status:
 - [x] `result` can read task state written by a different worker process
 - [x] delayed tasks survive worker restarts
 - [x] the in-memory implementations still pass the existing unit tests
-- [ ] failed tasks retain enough metadata to support DLQ inspection next
+- [x] failed tasks retain enough metadata to support DLQ inspection next
 
 Follow-on work:
 
-- DLQ storage and inspection remain part of milestone 6 follow-through
+- DLQ replay-resolution metadata and purge semantics remain deferred
 - PostgreSQL and NATS remain deferred
 - observability and health endpoints remain later-phase work
 

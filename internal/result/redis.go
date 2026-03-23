@@ -6,17 +6,15 @@ import (
 	"fmt"
 	"time"
 
+	taskredis "github.com/OneLastStop529/taskforge/internal/redis"
 	"github.com/OneLastStop529/taskforge/internal/task"
 	redis "github.com/redis/go-redis/v9"
 )
 
 // RedisConfig holds the connection settings for a Redis-backed result store.
 type RedisConfig struct {
-	Addr      string
-	Username  string
-	Password  string
-	DB        int
-	KeyPrefix string
+	Connection taskredis.Config
+	KeyPrefix  string
 }
 
 // RedisClient is the narrow client surface RedisBackend needs.
@@ -58,15 +56,10 @@ func (c *goRedisClient) Close() error {
 
 // NewRedisBackend creates a RedisBackend from connection config.
 func NewRedisBackend(cfg RedisConfig, ttl time.Duration) (*RedisBackend, error) {
-	if cfg.Addr == "" {
-		return nil, fmt.Errorf("taskforge: redis address must not be empty")
+	client, err := taskredis.NewClient(cfg.Connection)
+	if err != nil {
+		return nil, err
 	}
-	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Username: cfg.Username,
-		Password: cfg.Password,
-		DB:       cfg.DB,
-	})
 	return NewRedisBackendWithClient(&goRedisClient{client: client}, ttl, cfg.KeyPrefix), nil
 }
 
