@@ -234,6 +234,67 @@ func TestApp_ReplayDLQEntry(t *testing.T) {
 	if replayed == nil || replayed.State != taskforge.StateSuccess {
 		t.Fatalf("expected replayed task to succeed, got %v", replayed)
 	}
+
+	entry, err := app.GetDLQEntry(ctx, originalID)
+	if err != nil {
+		t.Fatalf("GetDLQEntry: %v", err)
+	}
+	if entry.ReplayCount != 1 {
+		t.Fatalf("got replay count %d, want 1", entry.ReplayCount)
+	}
+	if entry.LastReplayedTaskID != replayID {
+		t.Fatalf("got last replayed task id %q, want %q", entry.LastReplayedTaskID, replayID)
+	}
+	if entry.LastReplayedAt.IsZero() {
+		t.Fatal("expected last replayed at to be set")
+	}
+}
+
+func TestApp_PurgeDLQEntry(t *testing.T) {
+	cfg := taskforge.DefaultConfig()
+	cfg.Concurrency = 1
+	cfg.DefaultRetryPolicy.MaxAttempts = 1
+	app := taskforge.New(cfg)
+	defer app.Close() //nolint:errcheck
+
+	app.Register("always_fail", func(_ context.Context, _ []byte) ([]byte, error) {
+		return nil, context.DeadlineExceeded
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = app.StartWorker(ctx) }()
+
+	id, err := app.Enqueue(ctx, "always_fail", nil)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		entry, getErr := app.GetDLQEntry(ctx, id)
+		if getErr == nil && entry != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err := app.PurgeDLQEntry(ctx, id); err != nil {
+		t.Fatalf("PurgeDLQEntry: %v", err)
+	}
+	if _, err := app.GetDLQEntry(ctx, id); err == nil {
+		t.Fatal("expected purged dlq entry lookup to fail")
+	}
+
+	ids, err := app.ListDLQEntries(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("ListDLQEntries: %v", err)
+	}
+	for _, existing := range ids {
+		if existing == id {
+			t.Fatalf("expected purged id %q to be absent from list %v", id, ids)
+		}
+	}
 }
 
 func TestDefaultConfig_UsesMemoryBackends(t *testing.T) {

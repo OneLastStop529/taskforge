@@ -22,8 +22,10 @@ type RedisConfig struct {
 type RedisClient interface {
 	Set(ctx context.Context, key string, value []byte) error
 	Get(ctx context.Context, key string) ([]byte, error)
+	Del(ctx context.Context, keys ...string) error
 	ZAdd(ctx context.Context, key string, score float64, member string) error
 	ZRevRange(ctx context.Context, key string, start, stop int64) ([]string, error)
+	ZRem(ctx context.Context, key string, members ...string) error
 	Close() error
 }
 
@@ -53,12 +55,24 @@ func (c *goRedisClient) Get(ctx context.Context, key string) ([]byte, error) {
 	return value, nil
 }
 
+func (c *goRedisClient) Del(ctx context.Context, keys ...string) error {
+	return c.client.Del(ctx, keys...).Err()
+}
+
 func (c *goRedisClient) ZAdd(ctx context.Context, key string, score float64, member string) error {
 	return c.client.ZAdd(ctx, key, redis.Z{Score: score, Member: member}).Err()
 }
 
 func (c *goRedisClient) ZRevRange(ctx context.Context, key string, start, stop int64) ([]string, error) {
 	return c.client.ZRevRange(ctx, key, start, stop).Result()
+}
+
+func (c *goRedisClient) ZRem(ctx context.Context, key string, members ...string) error {
+	values := make([]any, 0, len(members))
+	for _, member := range members {
+		values = append(values, member)
+	}
+	return c.client.ZRem(ctx, key, values...).Err()
 }
 
 func (c *goRedisClient) Close() error {
@@ -140,6 +154,17 @@ func (b *RedisBackend) ListEntries(ctx context.Context, offset, limit int) ([]st
 		return nil, fmt.Errorf("taskforge: list redis dlq entries: %w", err)
 	}
 	return ids, nil
+}
+
+// DeleteEntry removes a DLQ entry by task ID.
+func (b *RedisBackend) DeleteEntry(ctx context.Context, id string) error {
+	if err := b.redisClient.Del(ctx, b.entryKey(id)); err != nil {
+		return fmt.Errorf("taskforge: delete redis dlq entry %q: %w", id, err)
+	}
+	if err := b.redisClient.ZRem(ctx, b.indexSortedSet, id); err != nil {
+		return fmt.Errorf("taskforge: deindex redis dlq entry %q: %w", id, err)
+	}
+	return nil
 }
 
 // Close releases any resources held by the backend.

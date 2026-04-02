@@ -66,6 +66,24 @@ func (b *MemoryBackend) ListEntries(_ context.Context, offset, limit int) ([]str
 	return ids, nil
 }
 
+// DeleteEntry removes a DLQ entry by task ID.
+func (b *MemoryBackend) DeleteEntry(_ context.Context, id string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if _, ok := b.entries[id]; !ok {
+		return fmt.Errorf("taskforge: dlq entry not found for task %q", id)
+	}
+	delete(b.entries, id)
+	for i, existing := range b.order {
+		if existing == id {
+			b.order = append(b.order[:i], b.order[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 // Close releases resources held by the backend.
 func (b *MemoryBackend) Close() error {
 	return nil

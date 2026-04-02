@@ -212,7 +212,7 @@ func runResult(args []string) {
 
 func runDLQ(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "dlq: expected subcommand: list or get")
+		fmt.Fprintln(os.Stderr, "dlq: expected subcommand: list, get, replay, or purge")
 		os.Exit(1)
 	}
 
@@ -223,6 +223,8 @@ func runDLQ(args []string) {
 		runDLQGet(args[1:])
 	case "replay":
 		runDLQReplay(args[1:])
+	case "purge":
+		runDLQPurge(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "dlq: unknown subcommand %q\n", args[0])
 		os.Exit(1)
@@ -318,6 +320,31 @@ func runDLQReplay(args []string) {
 		log.Fatalf("dlq replay: %v", err)
 	}
 	fmt.Println(replayID)
+}
+
+func runDLQPurge(args []string) {
+	fs := flag.NewFlagSet("dlq purge", flag.ExitOnError)
+	id := fs.String("id", "", "dead-lettered task ID (required)")
+	backend := bindBackendFlags(fs, false)
+	_ = fs.Parse(args)
+
+	if *id == "" {
+		fmt.Fprintln(os.Stderr, "dlq purge: -id is required")
+		os.Exit(1)
+	}
+
+	cfg := cliConfig()
+	cfg = backend.apply(cfg)
+
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("dlq purge: %v", err)
+	}
+	defer app.Close() //nolint:errcheck
+
+	if err := app.PurgeDLQEntry(context.Background(), *id); err != nil {
+		log.Fatalf("dlq purge: %v", err)
+	}
 }
 
 func runDemo() {

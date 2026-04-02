@@ -83,8 +83,11 @@ type Result struct {
 
 // DLQEntry captures the terminal failure context for a dead-lettered task.
 type DLQEntry struct {
-	ID       string    `json:"id"`
-	Message  Message   `json:"message"`
-	Result   Result    `json:"result"`
-	FailedAt time.Time `json:"failed_at"`
+	ID                 string    `json:"id"`
+	Message            Message   `json:"message"`
+	Result             Result    `json:"result"`
+	FailedAt           time.Time `json:"failed_at"`
+	ReplayCount        int       `json:"replay_count,omitempty"`
+	LastReplayedTaskID string    `json:"last_replayed_task_id,omitempty"`
+	LastReplayedAt     time.Time `json:"last_replayed_at,omitempty"`
 }

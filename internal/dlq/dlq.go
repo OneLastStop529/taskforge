@@ -15,6 +15,8 @@ type Backend interface {
 	GetEntry(ctx context.Context, id string) (*task.DLQEntry, error)
 	// ListEntries returns DLQ task IDs ordered from newest to oldest.
 	ListEntries(ctx context.Context, offset, limit int) ([]string, error)
+	// DeleteEntry removes a DLQ entry by task ID.
+	DeleteEntry(ctx context.Context, id string) error
 	// Close releases any resources held by the backend.
 	Close() error
 }

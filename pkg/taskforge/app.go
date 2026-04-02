@@ -325,9 +325,11 @@ func (a *App) ReplayDLQEntry(ctx context.Context, id string, opts ...EnqueueOpti
 	}
 
 	msg := entry.Message
-	msg.ID = newID()
+	replayID := newID()
+	replayedAt := time.Now()
+	msg.ID = replayID
 	msg.Attempt = 0
-	msg.EnqueuedAt = time.Now()
+	msg.EnqueuedAt = replayedAt
 	msg.ScheduledAt = time.Time{}
 	for _, o := range opts {
 		o(&msg)
@@ -335,7 +337,22 @@ func (a *App) ReplayDLQEntry(ctx context.Context, id string, opts ...EnqueueOpti
 	if msg.Queue == "" {
 		msg.Queue = a.cfg.DefaultQueue
 	}
-	return a.enqueueMessage(ctx, &msg)
+
+	updated := *entry
+	updated.ReplayCount++
+	updated.LastReplayedTaskID = replayID
+	updated.LastReplayedAt = replayedAt
+	if err := a.dlq.PutEntry(ctx, &updated); err != nil {
+		return "", fmt.Errorf("taskforge: record dlq replay metadata: %w", err)
+	}
+
+	if _, err := a.enqueueMessage(ctx, &msg); err != nil {
+		if rollbackErr := a.dlq.PutEntry(ctx, entry); rollbackErr != nil {
+			return "", fmt.Errorf("taskforge: replay dlq entry: %w (rollback failed: %v)", err, rollbackErr)
+		}
+		return "", err
+	}
+	return replayID, nil
 }
 
 // StartWorker starts the worker pool and blocks until ctx is cancelled.
@@ -355,6 +372,11 @@ func (a *App) GetDLQEntry(ctx context.Context, id string) (*DLQEntry, error) {
 // ListDLQEntries returns dead-lettered task IDs ordered from newest to oldest.
 func (a *App) ListDLQEntries(ctx context.Context, offset, limit int) ([]string, error) {
 	return a.dlq.ListEntries(ctx, offset, limit)
+}
+
+// PurgeDLQEntry removes a dead-lettered entry from inspection storage.
+func (a *App) PurgeDLQEntry(ctx context.Context, id string) error {
+	return a.dlq.DeleteEntry(ctx, id)
 }
 
 // AddSchedule registers a periodic task that fires on the given interval.

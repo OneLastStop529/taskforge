@@ -40,3 +40,29 @@ func TestMemoryBackend_PutGetAndList(t *testing.T) {
 		t.Fatalf("got ids %v, want [2 1]", ids)
 	}
 }
+
+func TestMemoryBackend_DeleteEntry(t *testing.T) {
+	be := dlq.NewMemoryBackend()
+	defer be.Close() //nolint:errcheck
+
+	ctx := context.Background()
+	if err := be.PutEntry(ctx, &task.DLQEntry{ID: "gone"}); err != nil {
+		t.Fatalf("PutEntry: %v", err)
+	}
+
+	if err := be.DeleteEntry(ctx, "gone"); err != nil {
+		t.Fatalf("DeleteEntry: %v", err)
+	}
+
+	if _, err := be.GetEntry(ctx, "gone"); err == nil {
+		t.Fatal("expected deleted entry lookup to fail")
+	}
+
+	ids, err := be.ListEntries(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("ListEntries: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("got ids %v, want none", ids)
+	}
+}

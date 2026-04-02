@@ -35,6 +35,13 @@ func (c *fakeRedisClient) Get(_ context.Context, key string) ([]byte, error) {
 	return append([]byte(nil), value...), nil
 }
 
+func (c *fakeRedisClient) Del(_ context.Context, keys ...string) error {
+	for _, key := range keys {
+		delete(c.values, key)
+	}
+	return nil
+}
+
 func (c *fakeRedisClient) ZAdd(_ context.Context, key string, _ float64, member string) error {
 	entries := c.zsets[key]
 	filtered := entries[:0]
@@ -61,6 +68,25 @@ func (c *fakeRedisClient) ZRevRange(_ context.Context, key string, start, stop i
 		stop = int64(len(reversed) - 1)
 	}
 	return append([]string(nil), reversed[start:stop+1]...), nil
+}
+
+func (c *fakeRedisClient) ZRem(_ context.Context, key string, members ...string) error {
+	entries := c.zsets[key]
+	filtered := entries[:0]
+	for _, existing := range entries {
+		remove := false
+		for _, member := range members {
+			if existing == member {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			filtered = append(filtered, existing)
+		}
+	}
+	c.zsets[key] = filtered
+	return nil
 }
 
 func (c *fakeRedisClient) Close() error {
@@ -110,6 +136,33 @@ func TestRedisBackend_Close(t *testing.T) {
 	}
 	if !client.closed {
 		t.Fatal("expected redis client to be closed")
+	}
+}
+
+func TestRedisBackend_DeleteEntry(t *testing.T) {
+	client := newFakeRedisClient()
+	be := dlq.NewRedisBackendWithClient(client, dlq.RedisConfig{
+		EntryKeyPrefix: "taskforge:test:dlq:",
+		IndexSortedSet: "taskforge:test:dlq:index",
+	})
+	defer be.Close() //nolint:errcheck
+
+	ctx := context.Background()
+	if err := be.PutEntry(ctx, &task.DLQEntry{ID: "gone"}); err != nil {
+		t.Fatalf("PutEntry: %v", err)
+	}
+	if err := be.DeleteEntry(ctx, "gone"); err != nil {
+		t.Fatalf("DeleteEntry: %v", err)
+	}
+	if _, err := be.GetEntry(ctx, "gone"); err == nil {
+		t.Fatal("expected deleted entry lookup to fail")
+	}
+	ids, err := be.ListEntries(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("ListEntries: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("got ids %v, want none", ids)
 	}
 }
 
