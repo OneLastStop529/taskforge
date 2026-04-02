@@ -221,6 +221,7 @@ func Open(cfg Config) (*App, error) {
 func NewMemory(cfg Config) *App {
 	cfg.BrokerBackend = BackendMemory
 	cfg.ResultBackend = BackendMemory
+	cfg.DLQBackend = BackendMemory
 	return New(cfg)
 }
 

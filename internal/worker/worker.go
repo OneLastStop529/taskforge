@@ -155,8 +155,15 @@ func (w *Worker) finalize(ctx context.Context, msg *task.Message, r *task.Result
 		retry := *msg
 		retry.Attempt = nextAttempt
 		retry.ScheduledAt = time.Now().Add(delay)
-		_ = w.broker.Ack(ctx, msg)
-		_ = w.broker.Enqueue(ctx, &retry)
+		if enqueueErr := w.broker.Enqueue(ctx, &retry); enqueueErr != nil {
+			w.opts.Logger.Printf("taskforge worker: failed to enqueue retry for task %s (%s): %v",
+				msg.Name, msg.ID, enqueueErr)
+			return
+		}
+		if ackErr := w.broker.Ack(ctx, msg); ackErr != nil {
+			w.opts.Logger.Printf("taskforge worker: failed to ack message for task %s (%s) after scheduling retry: %v",
+				msg.Name, msg.ID, ackErr)
+		}
 		return
 	}
 
@@ -174,7 +181,6 @@ func (w *Worker) finalize(ctx context.Context, msg *task.Message, r *task.Result
 		if dlqErr := w.dlq.PutEntry(ctx, entry); dlqErr != nil {
 			w.opts.Logger.Printf("taskforge worker: failed to persist dlq entry for task %s (%s): %v",
 				msg.Name, msg.ID, dlqErr)
-			return
 		}
 	}
 	_ = w.broker.Ack(ctx, msg)
