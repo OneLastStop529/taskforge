@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/OneLastStop529/taskforge/internal/broker"
+	"github.com/OneLastStop529/taskforge/internal/dlq"
 	"github.com/OneLastStop529/taskforge/internal/result"
 	"github.com/OneLastStop529/taskforge/internal/task"
 )
@@ -29,12 +30,13 @@ type Worker struct {
 	broker   broker.Broker
 	registry *task.Registry
 	backend  result.Backend
+	dlq      dlq.Backend
 	wg       sync.WaitGroup
 	cancel   context.CancelFunc
 }
 
 // New creates a Worker with the given components and options.
-func New(b broker.Broker, reg *task.Registry, be result.Backend, opts Options) *Worker {
+func New(b broker.Broker, reg *task.Registry, be result.Backend, deadletter dlq.Backend, opts Options) *Worker {
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 1
 	}
@@ -49,6 +51,7 @@ func New(b broker.Broker, reg *task.Registry, be result.Backend, opts Options) *
 		broker:   b,
 		registry: reg,
 		backend:  be,
+		dlq:      deadletter,
 	}
 }
 
@@ -152,7 +155,15 @@ func (w *Worker) finalize(ctx context.Context, msg *task.Message, r *task.Result
 		retry := *msg
 		retry.Attempt = nextAttempt
 		retry.ScheduledAt = time.Now().Add(delay)
-		_ = w.broker.Nack(ctx, &retry)
+		if enqueueErr := w.broker.Enqueue(ctx, &retry); enqueueErr != nil {
+			w.opts.Logger.Printf("taskforge worker: failed to enqueue retry for task %s (%s): %v",
+				msg.Name, msg.ID, enqueueErr)
+			return
+		}
+		if ackErr := w.broker.Ack(ctx, msg); ackErr != nil {
+			w.opts.Logger.Printf("taskforge worker: failed to ack message for task %s (%s) after scheduling retry: %v",
+				msg.Name, msg.ID, ackErr)
+		}
 		return
 	}
 
@@ -160,5 +171,17 @@ func (w *Worker) finalize(ctx context.Context, msg *task.Message, r *task.Result
 	w.opts.Logger.Printf("taskforge worker: task %s (%s) failed permanently after %d attempts: %v",
 		msg.Name, msg.ID, msg.RetryPolicy.MaxAttempts, err)
 	_ = w.backend.SetResult(ctx, r)
+	if w.dlq != nil {
+		entry := &task.DLQEntry{
+			ID:       msg.ID,
+			Message:  *msg,
+			Result:   *r,
+			FailedAt: r.FinishedAt,
+		}
+		if dlqErr := w.dlq.PutEntry(ctx, entry); dlqErr != nil {
+			w.opts.Logger.Printf("taskforge worker: failed to persist dlq entry for task %s (%s): %v",
+				msg.Name, msg.ID, dlqErr)
+		}
+	}
 	_ = w.broker.Ack(ctx, msg)
 }

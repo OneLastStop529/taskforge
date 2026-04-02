@@ -30,6 +30,8 @@ func main() {
 		runEnqueue(os.Args[2:])
 	case "result":
 		runResult(os.Args[2:])
+	case "dlq":
+		runDLQ(os.Args[2:])
 	case "demo":
 		runDemo()
 	default:
@@ -51,6 +53,7 @@ Commands:
   worker    [scaffolding] Start an in-process worker (ephemeral, not cross-process)
   enqueue   [scaffolding] Enqueue a task into a private in-process broker
   result    [scaffolding] Retrieve a result from a private in-process store
+  dlq       Inspect dead-lettered tasks
 
 NOTE: worker, enqueue, and result each create their own isolated in-memory
       broker and result backend. They do not share state across processes.
@@ -58,17 +61,68 @@ NOTE: worker, enqueue, and result each create their own isolated in-memory
 `)
 }
 
+type backendFlags struct {
+	brokerBackend *string
+	resultBackend *string
+	dlqBackend    *string
+	redisAddr     *string
+	redisUsername *string
+	redisPassword *string
+	redisDB       *int
+}
+
+func bindBackendFlags(fs *flag.FlagSet, includeBroker bool) backendFlags {
+	flags := backendFlags{}
+	if includeBroker {
+		flags.brokerBackend = fs.String("broker-backend", string(taskforge.BackendMemory), "broker backend: memory or redis")
+	}
+	flags.resultBackend = fs.String("result-backend", string(taskforge.BackendMemory), "result backend: memory or redis")
+	flags.dlqBackend = fs.String("dlq-backend", "", "dlq backend: memory or redis (defaults to result backend)")
+	flags.redisAddr = fs.String("redis-addr", "127.0.0.1:6379", "Redis address")
+	flags.redisUsername = fs.String("redis-username", "", "Redis username")
+	flags.redisPassword = fs.String("redis-password", "", "Redis password")
+	flags.redisDB = fs.Int("redis-db", 0, "Redis database index")
+	return flags
+}
+
+func (f backendFlags) apply(cfg taskforge.Config) taskforge.Config {
+	if f.brokerBackend != nil {
+		cfg.BrokerBackend = taskforge.BackendKind(*f.brokerBackend)
+	}
+	if f.resultBackend != nil {
+		cfg.ResultBackend = taskforge.BackendKind(*f.resultBackend)
+	}
+	if f.dlqBackend != nil {
+		cfg.DLQBackend = taskforge.BackendKind(*f.dlqBackend)
+	}
+	if f.redisAddr != nil {
+		cfg.Redis = taskforge.RedisConfig{
+			Addr:     *f.redisAddr,
+			Username: *f.redisUsername,
+			Password: *f.redisPassword,
+			DB:       *f.redisDB,
+		}
+	}
+	return cfg
+}
+
 func runWorker(args []string) {
 	fs := flag.NewFlagSet("worker", flag.ExitOnError)
 	concurrency := fs.Int("concurrency", 10, "number of concurrent workers")
 	queue := fs.String("queue", "default", "queue name to consume from")
+	backend := bindBackendFlags(fs, true)
 	_ = fs.Parse(args)
 
-	cfg := taskforge.DefaultConfig()
+	cfg := cliConfig()
 	cfg.Concurrency = *concurrency
 	cfg.DefaultQueue = *queue
+	cfg = backend.apply(cfg)
 
-	app := taskforge.New(cfg)
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("taskforge worker: %v", err)
+	}
+	defer app.Close() //nolint:errcheck
 	// Register a simple echo handler for demonstration.
 	app.Register("echo", func(_ context.Context, payload []byte) ([]byte, error) {
 		return payload, nil
@@ -78,7 +132,9 @@ func runWorker(args []string) {
 	defer stop()
 
 	log.Printf("taskforge worker: starting (concurrency=%d queue=%s)", *concurrency, *queue)
-	log.Printf("NOTE: using in-memory broker — state is not shared with other processes; use 'demo' for a fully functional example")
+	if cfg.BrokerBackend == taskforge.BackendMemory && cfg.ResultBackend == taskforge.BackendMemory {
+		log.Printf("NOTE: using in-memory broker/result backend — state is not shared with other processes; use 'demo' for a fully functional example")
+	}
 	if err := app.StartWorker(ctx); err != nil {
 		log.Fatalf("taskforge worker: %v", err)
 	}
@@ -90,6 +146,7 @@ func runEnqueue(args []string) {
 	payload := fs.String("payload", "{}", "JSON payload")
 	queue := fs.String("queue", "default", "destination queue")
 	delay := fs.Duration("delay", 0, "delay before task runs (e.g. 5s)")
+	backend := bindBackendFlags(fs, true)
 	_ = fs.Parse(args)
 
 	if *name == "" {
@@ -97,11 +154,16 @@ func runEnqueue(args []string) {
 		os.Exit(1)
 	}
 
-	log.Printf("NOTE: enqueue uses an ephemeral in-memory broker; the task ID printed below is not visible to any other process")
-
-	cfg := taskforge.DefaultConfig()
+	cfg := cliConfig()
 	cfg.DefaultQueue = *queue
-	app := taskforge.New(cfg)
+	cfg = backend.apply(cfg)
+	if cfg.BrokerBackend == taskforge.BackendMemory && cfg.ResultBackend == taskforge.BackendMemory {
+		log.Printf("NOTE: enqueue uses an ephemeral in-memory broker/result backend; the task ID printed below is not visible to any other process")
+	}
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("enqueue: %v", err)
+	}
 	defer app.Close() //nolint:errcheck
 
 	ctx := context.Background()
@@ -119,6 +181,7 @@ func runEnqueue(args []string) {
 func runResult(args []string) {
 	fs := flag.NewFlagSet("result", flag.ExitOnError)
 	id := fs.String("id", "", "task ID (required)")
+	backend := bindBackendFlags(fs, true)
 	_ = fs.Parse(args)
 
 	if *id == "" {
@@ -126,10 +189,15 @@ func runResult(args []string) {
 		os.Exit(1)
 	}
 
-	log.Printf("NOTE: result uses an ephemeral in-memory store; it will always return 'not found' for IDs produced by other processes")
-
-	cfg := taskforge.DefaultConfig()
-	app := taskforge.New(cfg)
+	cfg := cliConfig()
+	cfg = backend.apply(cfg)
+	if cfg.BrokerBackend == taskforge.BackendMemory && cfg.ResultBackend == taskforge.BackendMemory {
+		log.Printf("NOTE: result uses an ephemeral in-memory store; it will always return 'not found' for IDs produced by other processes")
+	}
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("result: %v", err)
+	}
 	defer app.Close() //nolint:errcheck
 
 	ctx := context.Background()
@@ -142,10 +210,147 @@ func runResult(args []string) {
 	_ = enc.Encode(r)
 }
 
+func runDLQ(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "dlq: expected subcommand: list, get, replay, or purge")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "list":
+		runDLQList(args[1:])
+	case "get":
+		runDLQGet(args[1:])
+	case "replay":
+		runDLQReplay(args[1:])
+	case "purge":
+		runDLQPurge(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "dlq: unknown subcommand %q\n", args[0])
+		os.Exit(1)
+	}
+}
+
+func runDLQList(args []string) {
+	fs := flag.NewFlagSet("dlq list", flag.ExitOnError)
+	backend := bindBackendFlags(fs, false)
+	offset := fs.Int("offset", 0, "offset into newest-first DLQ entries")
+	limit := fs.Int("limit", 20, "maximum number of DLQ IDs to return")
+	_ = fs.Parse(args)
+
+	cfg := cliConfig()
+	cfg = backend.apply(cfg)
+
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("dlq list: %v", err)
+	}
+	defer app.Close() //nolint:errcheck
+
+	ids, err := app.ListDLQEntries(context.Background(), *offset, *limit)
+	if err != nil {
+		log.Fatalf("dlq list: %v", err)
+	}
+	for _, id := range ids {
+		fmt.Println(id)
+	}
+}
+
+func runDLQGet(args []string) {
+	fs := flag.NewFlagSet("dlq get", flag.ExitOnError)
+	id := fs.String("id", "", "task ID (required)")
+	backend := bindBackendFlags(fs, false)
+	_ = fs.Parse(args)
+
+	if *id == "" {
+		fmt.Fprintln(os.Stderr, "dlq get: -id is required")
+		os.Exit(1)
+	}
+
+	cfg := cliConfig()
+	cfg = backend.apply(cfg)
+
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("dlq get: %v", err)
+	}
+	defer app.Close() //nolint:errcheck
+
+	entry, err := app.GetDLQEntry(context.Background(), *id)
+	if err != nil {
+		log.Fatalf("dlq get: %v", err)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(entry)
+}
+
+func runDLQReplay(args []string) {
+	fs := flag.NewFlagSet("dlq replay", flag.ExitOnError)
+	id := fs.String("id", "", "dead-lettered task ID (required)")
+	queue := fs.String("queue", "", "optional queue override for the replayed task")
+	delay := fs.Duration("delay", 0, "optional delay before replay runs (e.g. 5s)")
+	backend := bindBackendFlags(fs, true)
+	_ = fs.Parse(args)
+
+	if *id == "" {
+		fmt.Fprintln(os.Stderr, "dlq replay: -id is required")
+		os.Exit(1)
+	}
+
+	cfg := cliConfig()
+	cfg = backend.apply(cfg)
+
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("dlq replay: %v", err)
+	}
+	defer app.Close() //nolint:errcheck
+
+	var opts []taskforge.EnqueueOption
+	if *queue != "" {
+		opts = append(opts, taskforge.WithQueue(*queue))
+	}
+	if *delay > 0 {
+		opts = append(opts, taskforge.WithDelay(*delay))
+	}
+
+	replayID, err := app.ReplayDLQEntry(context.Background(), *id, opts...)
+	if err != nil {
+		log.Fatalf("dlq replay: %v", err)
+	}
+	fmt.Println(replayID)
+}
+
+func runDLQPurge(args []string) {
+	fs := flag.NewFlagSet("dlq purge", flag.ExitOnError)
+	id := fs.String("id", "", "dead-lettered task ID (required)")
+	backend := bindBackendFlags(fs, false)
+	_ = fs.Parse(args)
+
+	if *id == "" {
+		fmt.Fprintln(os.Stderr, "dlq purge: -id is required")
+		os.Exit(1)
+	}
+
+	cfg := cliConfig()
+	cfg = backend.apply(cfg)
+
+	app, err := taskforge.Open(cfg)
+	if err != nil {
+		log.Fatalf("dlq purge: %v", err)
+	}
+	defer app.Close() //nolint:errcheck
+
+	if err := app.PurgeDLQEntry(context.Background(), *id); err != nil {
+		log.Fatalf("dlq purge: %v", err)
+	}
+}
+
 func runDemo() {
-	cfg := taskforge.DefaultConfig()
+	cfg := cliConfig()
 	cfg.Concurrency = 4
-	app := taskforge.New(cfg)
+	app := taskforge.NewMemory(cfg)
 	defer app.Close() //nolint:errcheck
 
 	// Register a few tasks.
@@ -205,4 +410,8 @@ func runDemo() {
 		fmt.Printf("  %s [%s]: %s\n", id, r.State, string(r.Output))
 	}
 	fmt.Println()
+}
+
+func cliConfig() taskforge.Config {
+	return taskforge.DefaultConfig()
 }

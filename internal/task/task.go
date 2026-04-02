@@ -71,12 +71,23 @@ type Message struct {
 
 // Result holds the outcome of a task execution.
 type Result struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	State       State           `json:"state"`
-	Output      json.RawMessage `json:"output,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	Attempt     int             `json:"attempt"`
-	StartedAt   time.Time       `json:"started_at"`
-	FinishedAt  time.Time       `json:"finished_at"`
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	State      State           `json:"state"`
+	Output     json.RawMessage `json:"output,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Attempt    int             `json:"attempt"`
+	StartedAt  time.Time       `json:"started_at"`
+	FinishedAt time.Time       `json:"finished_at"`
+}
+
+// DLQEntry captures the terminal failure context for a dead-lettered task.
+type DLQEntry struct {
+	ID                 string    `json:"id"`
+	Message            Message   `json:"message"`
+	Result             Result    `json:"result"`
+	FailedAt           time.Time `json:"failed_at"`
+	ReplayCount        int       `json:"replay_count,omitempty"`
+	LastReplayedTaskID string    `json:"last_replayed_task_id,omitempty"`
+	LastReplayedAt     time.Time `json:"last_replayed_at,omitempty"`
 }
