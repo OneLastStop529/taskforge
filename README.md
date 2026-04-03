@@ -174,8 +174,20 @@ app.Enqueue(ctx, "task", payload,
 	taskforge.WithQueue("high-priority"),
 	taskforge.WithDelay(10*time.Second),
 	taskforge.WithTimeout(30*time.Second),
+	taskforge.WithIdempotencyKey("invoice:123"),
 )
 ```
+
+### Idempotent enqueue
+
+```go
+id, err := app.Enqueue(ctx, "charge_customer", payload,
+	taskforge.WithIdempotencyKey("invoice:123"),
+)
+```
+
+Later enqueue calls with the same idempotency key return the same canonical
+task ID and do not admit duplicate work.
 
 ### Periodic tasks
 
@@ -189,6 +201,8 @@ go app.StartScheduler(ctx)
 ```text
 cmd/taskforge/       CLI entry point
 internal/broker/     Broker interface + in-memory implementation
+internal/dlq/        Dead-letter queue backends
+internal/idempotency/ Enqueue idempotency backends
 internal/result/     Result backend interface + in-memory implementation
 internal/scheduler/  Periodic task scheduler
 internal/task/       Message types, retry policy, handler registry

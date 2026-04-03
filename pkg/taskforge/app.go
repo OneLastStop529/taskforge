@@ -25,6 +25,7 @@ import (
 
 	"github.com/OneLastStop529/taskforge/internal/broker"
 	"github.com/OneLastStop529/taskforge/internal/dlq"
+	"github.com/OneLastStop529/taskforge/internal/idempotency"
 	taskredis "github.com/OneLastStop529/taskforge/internal/redis"
 	"github.com/OneLastStop529/taskforge/internal/result"
 	"github.com/OneLastStop529/taskforge/internal/scheduler"
@@ -77,6 +78,8 @@ type Config struct {
 	ResultBackend BackendKind
 	// DLQBackend selects the dead-letter queue storage implementation.
 	DLQBackend BackendKind
+	// IdempotencyBackend selects the enqueue idempotency storage implementation.
+	IdempotencyBackend BackendKind
 	// Redis contains connection settings for Redis-backed components.
 	Redis RedisConfig
 }
@@ -99,6 +102,7 @@ func DefaultConfig() Config {
 		BrokerBackend:      BackendMemory,
 		ResultBackend:      BackendMemory,
 		DLQBackend:         BackendMemory,
+		IdempotencyBackend: BackendMemory,
 		Redis: RedisConfig{
 			Addr: "127.0.0.1:6379",
 		},
@@ -120,12 +124,18 @@ func (c Config) Validate() error {
 	if err := validateBackendKind("dlq backend", c.DLQBackend); err != nil {
 		return err
 	}
+	if err := validateBackendKind("idempotency backend", c.IdempotencyBackend); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (c Config) withDefaults() Config {
 	if c.DLQBackend == "" {
 		c.DLQBackend = c.ResultBackend
+	}
+	if c.IdempotencyBackend == "" {
+		c.IdempotencyBackend = c.ResultBackend
 	}
 	return c
 }
@@ -172,14 +182,20 @@ func WithPriority(p int) EnqueueOption {
 	return func(m *task.Message) { m.Priority = p }
 }
 
+// WithIdempotencyKey deduplicates logically identical enqueue requests.
+func WithIdempotencyKey(key string) EnqueueOption {
+	return func(m *task.Message) { m.IdempotencyKey = key }
+}
+
 // App is the central Taskforge application object.
 type App struct {
-	cfg       Config
-	broker    broker.Broker
-	registry  *task.Registry
-	backend   result.Backend
-	dlq       dlq.Backend
-	scheduler *scheduler.Scheduler
+	cfg         Config
+	broker      broker.Broker
+	registry    *task.Registry
+	backend     result.Backend
+	dlq         dlq.Backend
+	idempotency idempotency.Backend
+	scheduler   *scheduler.Scheduler
 }
 
 // New creates a new Taskforge App using the configured broker and result backends.
@@ -214,7 +230,14 @@ func Open(cfg Config) (*App, error) {
 		_ = b.Close()
 		return nil, err
 	}
-	return newApp(cfg, b, be, deadletters), nil
+	idem, err := buildIdempotencyBackend(cfg)
+	if err != nil {
+		_ = deadletters.Close()
+		_ = be.Close()
+		_ = b.Close()
+		return nil, err
+	}
+	return newApp(cfg, b, be, deadletters, idem), nil
 }
 
 // NewMemory creates a new Taskforge App backed by the in-memory implementations.
@@ -222,17 +245,19 @@ func NewMemory(cfg Config) *App {
 	cfg.BrokerBackend = BackendMemory
 	cfg.ResultBackend = BackendMemory
 	cfg.DLQBackend = BackendMemory
+	cfg.IdempotencyBackend = BackendMemory
 	return New(cfg)
 }
 
-func newApp(cfg Config, b broker.Broker, be result.Backend, deadletters dlq.Backend) *App {
+func newApp(cfg Config, b broker.Broker, be result.Backend, deadletters dlq.Backend, idem idempotency.Backend) *App {
 	reg := task.NewRegistry()
 	a := &App{
-		cfg:      cfg,
-		broker:   b,
-		registry: reg,
-		backend:  be,
-		dlq:      deadletters,
+		cfg:         cfg,
+		broker:      b,
+		registry:    reg,
+		backend:     be,
+		dlq:         deadletters,
+		idempotency: idem,
 	}
 	a.scheduler = scheduler.New(a.dispatchMsg, newID, nil)
 	return a
@@ -286,6 +311,19 @@ func buildDLQBackend(cfg Config) (dlq.Backend, error) {
 	}
 }
 
+func buildIdempotencyBackend(cfg Config) (idempotency.Backend, error) {
+	switch cfg.IdempotencyBackend {
+	case BackendMemory:
+		return idempotency.NewMemoryBackend(), nil
+	case BackendRedis:
+		return idempotency.NewRedisBackend(idempotency.RedisConfig{
+			Connection: redisConnection(cfg),
+		})
+	default:
+		return nil, fmt.Errorf("taskforge: unsupported idempotency backend %q", cfg.IdempotencyBackend)
+	}
+}
+
 // Register binds a task name to a handler function.
 // Call this before starting the worker.
 func (a *App) Register(name string, fn HandlerFunc) {
@@ -310,7 +348,7 @@ func (a *App) Enqueue(ctx context.Context, name string, payload interface{}, opt
 	for _, o := range opts {
 		o(msg)
 	}
-	return a.enqueueMessage(ctx, msg)
+	return a.enqueueWithIdempotency(ctx, msg)
 }
 
 // GetResult retrieves the result for the given task ID.
@@ -332,6 +370,7 @@ func (a *App) ReplayDLQEntry(ctx context.Context, id string, opts ...EnqueueOpti
 	msg.Attempt = 0
 	msg.EnqueuedAt = replayedAt
 	msg.ScheduledAt = time.Time{}
+	msg.IdempotencyKey = ""
 	for _, o := range opts {
 		o(&msg)
 	}
@@ -410,7 +449,10 @@ func (a *App) Close() error {
 	if err := a.backend.Close(); err != nil {
 		return err
 	}
-	return a.dlq.Close()
+	if err := a.dlq.Close(); err != nil {
+		return err
+	}
+	return a.idempotency.Close()
 }
 
 // dispatchMsg is the scheduler callback that enqueues a pre-built message.
@@ -428,6 +470,28 @@ func (a *App) enqueueMessage(ctx context.Context, msg *task.Message) (string, er
 		Name:  msg.Name,
 		State: task.StatePending,
 	})
+	return msg.ID, nil
+}
+
+func (a *App) enqueueWithIdempotency(ctx context.Context, msg *task.Message) (string, error) {
+	if msg.IdempotencyKey == "" {
+		return a.enqueueMessage(ctx, msg)
+	}
+
+	record, claimed, err := a.idempotency.ClaimOrGet(ctx, msg.IdempotencyKey, msg.ID)
+	if err != nil {
+		return "", fmt.Errorf("taskforge: claim idempotency key %q: %w", msg.IdempotencyKey, err)
+	}
+	if !claimed {
+		return record.TaskID, nil
+	}
+
+	if _, err := a.enqueueMessage(ctx, msg); err != nil {
+		if rollbackErr := a.idempotency.ReleaseIfOwner(ctx, msg.IdempotencyKey, msg.ID); rollbackErr != nil {
+			return "", fmt.Errorf("taskforge: enqueue idempotent task: %w (rollback failed: %v)", err, rollbackErr)
+		}
+		return "", err
+	}
 	return msg.ID, nil
 }
 

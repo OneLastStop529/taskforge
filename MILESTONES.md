@@ -313,17 +313,17 @@ Enqueue path must:
 
 Acceptance criteria
 
-- [ ] two enqueue calls with the same idempotency key return the same task ID
-- [ ] only one broker message is created for a given idempotency key
-- [ ] concurrent enqueue attempts from different processes behave correctly with Redis
-- [ ] enqueue failure does not leave a stale idempotency claim behind
-- [ ] duplicate enqueue after terminal task failure still returns the original task ID
-- [ ] enqueue calls without idempotency keys preserve current behavior
-- [ ] DLQ replay remains usable and is not blocked by the original task's idempotency key
-- [ ] unit tests cover in-memory behavior and race cases
-- [ ] Redis integration tests cover cross-process duplicate enqueue
+- [x] two enqueue calls with the same idempotency key return the same task ID
+- [x] only one broker message is created for a given idempotency key
+- [x] concurrent enqueue attempts from different processes behave correctly with Redis
+- [x] enqueue failure does not leave a stale idempotency claim behind
+- [x] duplicate enqueue after terminal task failure still returns the original task ID
+- [x] enqueue calls without idempotency keys preserve current behavior
+- [x] DLQ replay remains usable and is not blocked by the original task's idempotency key
+- [x] unit tests cover in-memory behavior and race cases
+- [x] Redis integration tests cover cross-process duplicate enqueue
 
-Status: `TODO`
+Status: `DONE`
 
 ## Phase 3: Observability (Milestones 9-12)
 

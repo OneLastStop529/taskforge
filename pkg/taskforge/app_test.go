@@ -309,6 +309,9 @@ func TestDefaultConfig_UsesMemoryBackends(t *testing.T) {
 	if cfg.DLQBackend != taskforge.BackendMemory {
 		t.Fatalf("expected memory dlq backend, got %q", cfg.DLQBackend)
 	}
+	if cfg.IdempotencyBackend != taskforge.BackendMemory {
+		t.Fatalf("expected memory idempotency backend, got %q", cfg.IdempotencyBackend)
+	}
 	if cfg.Redis.Addr == "" {
 		t.Fatal("expected default redis address to be set")
 	}
@@ -329,6 +332,7 @@ func TestOpen_RedisBackendsConstruct(t *testing.T) {
 	cfg.BrokerBackend = taskforge.BackendRedis
 	cfg.ResultBackend = taskforge.BackendRedis
 	cfg.DLQBackend = taskforge.BackendRedis
+	cfg.IdempotencyBackend = taskforge.BackendRedis
 
 	app, err := taskforge.Open(cfg)
 	if err != nil {
