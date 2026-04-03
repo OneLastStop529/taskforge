@@ -45,6 +45,7 @@ func redisTestConfig(t *testing.T) (taskforge.Config, func()) {
 	cfg.BrokerBackend = taskforge.BackendRedis
 	cfg.ResultBackend = taskforge.BackendRedis
 	cfg.DLQBackend = taskforge.BackendRedis
+	cfg.IdempotencyBackend = taskforge.BackendRedis
 	cfg.Redis.Addr = addr
 	cfg.Redis.DB = db
 	cfg.Concurrency = 1

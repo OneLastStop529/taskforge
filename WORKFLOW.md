@@ -6,6 +6,7 @@ This diagram shows the current high-level task execution flow.
 flowchart LR
     A[Client / CLI / Library Call]
     B[Taskforge App]
+    J[Idempotency Backend<br/>memory or redis]
     C[Task Registry]
     D[Broker<br/>memory or redis]
     E[Worker Pool]
@@ -16,6 +17,7 @@ flowchart LR
 
     A --> B
     B --> C
+    B --> J
     B --> D
     I --> D
     D --> E

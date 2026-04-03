@@ -57,16 +57,17 @@ func (r RetryPolicy) NextDelay(attempt int) time.Duration {
 
 // Message is the envelope sent through the broker.
 type Message struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Payload     json.RawMessage `json:"payload"`
-	Queue       string          `json:"queue"`
-	Priority    int             `json:"priority"`
-	Attempt     int             `json:"attempt"`
-	RetryPolicy RetryPolicy     `json:"retry_policy"`
-	ScheduledAt time.Time       `json:"scheduled_at"`
-	EnqueuedAt  time.Time       `json:"enqueued_at"`
-	Timeout     time.Duration   `json:"timeout"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Payload        json.RawMessage `json:"payload"`
+	Queue          string          `json:"queue"`
+	Priority       int             `json:"priority"`
+	Attempt        int             `json:"attempt"`
+	RetryPolicy    RetryPolicy     `json:"retry_policy"`
+	ScheduledAt    time.Time       `json:"scheduled_at"`
+	EnqueuedAt     time.Time       `json:"enqueued_at"`
+	Timeout        time.Duration   `json:"timeout"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 }
 
 // Result holds the outcome of a task execution.

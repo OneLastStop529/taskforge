@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -104,6 +105,85 @@ func TestRedisIntegration_DelayedTaskSurvivesWorkerRestart(t *testing.T) {
 	}
 }
 
+func TestRedisIntegration_IdempotentEnqueueAcrossApps(t *testing.T) {
+	cfg, cleanup := redisTestConfig(t)
+	defer cleanup()
+
+	workerApp := openRedisApp(t, cfg, "worker")
+	defer workerApp.Close() //nolint:errcheck
+
+	producerOne := openRedisApp(t, cfg, "producer-one")
+	defer producerOne.Close() //nolint:errcheck
+
+	producerTwo := openRedisApp(t, cfg, "producer-two")
+	defer producerTwo.Close() //nolint:errcheck
+
+	resultApp := openRedisApp(t, cfg, "result")
+	defer resultApp.Close() //nolint:errcheck
+
+	var executions atomic.Int32
+	workerApp.Register("count_once", func(_ context.Context, payload []byte) ([]byte, error) {
+		executions.Add(1)
+		return payload, nil
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = workerApp.StartWorker(ctx) }()
+
+	type enqueueResult struct {
+		id  string
+		err error
+	}
+	results := make(chan enqueueResult, 2)
+
+	start := make(chan struct{})
+	go func() {
+		<-start
+		id, err := producerOne.Enqueue(ctx, "count_once", map[string]string{"msg": "hello"}, taskforge.WithIdempotencyKey("invoice:123"))
+		results <- enqueueResult{id: id, err: err}
+	}()
+	go func() {
+		<-start
+		id, err := producerTwo.Enqueue(ctx, "count_once", map[string]string{"msg": "hello"}, taskforge.WithIdempotencyKey("invoice:123"))
+		results <- enqueueResult{id: id, err: err}
+	}()
+	close(start)
+
+	first := <-results
+	second := <-results
+	if first.err != nil {
+		t.Fatalf("first Enqueue: %v", first.err)
+	}
+	if second.err != nil {
+		t.Fatalf("second Enqueue: %v", second.err)
+	}
+	if first.id != second.id {
+		t.Fatalf("got ids %q and %q, want canonical reuse", first.id, second.id)
+	}
+
+	r := waitForResult(t, resultApp, first.id, func(r *taskforge.Result) bool {
+		return r.State == taskforge.StateSuccess
+	})
+	if r.State != taskforge.StateSuccess {
+		t.Fatalf("got result state %s, want SUCCESS", r.State)
+	}
+	if executions.Load() != 1 {
+		t.Fatalf("got %d executions, want 1", executions.Load())
+	}
+
+	reusedID, err := producerOne.Enqueue(ctx, "count_once", map[string]string{"msg": "different"}, taskforge.WithIdempotencyKey("invoice:123"))
+	if err != nil {
+		t.Fatalf("reuse after success Enqueue: %v", err)
+	}
+	if reusedID != first.id {
+		t.Fatalf("got reused id %q, want canonical id %q", reusedID, first.id)
+	}
+	if executions.Load() != 1 {
+		t.Fatalf("got %d executions after duplicate reuse, want 1", executions.Load())
+	}
+}
+
 func TestRedisIntegration_DLQVisibleAcrossApps(t *testing.T) {
 	cfg, cleanup := redisTestConfig(t)
 	defer cleanup()
@@ -184,7 +264,7 @@ func TestRedisIntegration_ReplayDLQEntryAcrossApps(t *testing.T) {
 	defer cancel()
 	go func() { _ = workerApp.StartWorker(ctx) }()
 
-	originalID, err := producerApp.Enqueue(ctx, "toggle_fail", map[string]string{"msg": "hello"})
+	originalID, err := producerApp.Enqueue(ctx, "toggle_fail", map[string]string{"msg": "hello"}, taskforge.WithIdempotencyKey("toggle:hello"))
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -194,6 +274,14 @@ func TestRedisIntegration_ReplayDLQEntryAcrossApps(t *testing.T) {
 	})
 	if failed.State != taskforge.StateFailed {
 		t.Fatalf("got result state %s, want FAILED", failed.State)
+	}
+
+	reusedID, err := producerApp.Enqueue(context.Background(), "toggle_fail", map[string]string{"msg": "ignored"}, taskforge.WithIdempotencyKey("toggle:hello"))
+	if err != nil {
+		t.Fatalf("duplicate Enqueue after failure: %v", err)
+	}
+	if reusedID != originalID {
+		t.Fatalf("got duplicate enqueue id %q, want original id %q", reusedID, originalID)
 	}
 
 	replayID, err := inspectorApp.ReplayDLQEntry(context.Background(), originalID)

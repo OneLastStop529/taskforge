@@ -56,8 +56,8 @@ Commands:
   dlq       Inspect dead-lettered tasks
 
 NOTE: worker, enqueue, and result each create their own isolated in-memory
-      broker and result backend. They do not share state across processes.
-      Use 'demo' for a fully functional end-to-end example.
+      broker, result, DLQ, and idempotency backend. They do not share state
+      across processes. Use 'demo' for a fully functional end-to-end example.
 `)
 }
 
@@ -65,6 +65,7 @@ type backendFlags struct {
 	brokerBackend *string
 	resultBackend *string
 	dlqBackend    *string
+	idemBackend   *string
 	redisAddr     *string
 	redisUsername *string
 	redisPassword *string
@@ -78,6 +79,7 @@ func bindBackendFlags(fs *flag.FlagSet, includeBroker bool) backendFlags {
 	}
 	flags.resultBackend = fs.String("result-backend", string(taskforge.BackendMemory), "result backend: memory or redis")
 	flags.dlqBackend = fs.String("dlq-backend", "", "dlq backend: memory or redis (defaults to result backend)")
+	flags.idemBackend = fs.String("idempotency-backend", "", "idempotency backend: memory or redis (defaults to result backend)")
 	flags.redisAddr = fs.String("redis-addr", "127.0.0.1:6379", "Redis address")
 	flags.redisUsername = fs.String("redis-username", "", "Redis username")
 	flags.redisPassword = fs.String("redis-password", "", "Redis password")
@@ -94,6 +96,9 @@ func (f backendFlags) apply(cfg taskforge.Config) taskforge.Config {
 	}
 	if f.dlqBackend != nil {
 		cfg.DLQBackend = taskforge.BackendKind(*f.dlqBackend)
+	}
+	if f.idemBackend != nil {
+		cfg.IdempotencyBackend = taskforge.BackendKind(*f.idemBackend)
 	}
 	if f.redisAddr != nil {
 		cfg.Redis = taskforge.RedisConfig{
@@ -146,6 +151,7 @@ func runEnqueue(args []string) {
 	payload := fs.String("payload", "{}", "JSON payload")
 	queue := fs.String("queue", "default", "destination queue")
 	delay := fs.Duration("delay", 0, "delay before task runs (e.g. 5s)")
+	idempotencyKey := fs.String("idempotency-key", "", "optional enqueue idempotency key")
 	backend := bindBackendFlags(fs, true)
 	_ = fs.Parse(args)
 
@@ -170,6 +176,9 @@ func runEnqueue(args []string) {
 	var opts []taskforge.EnqueueOption
 	if *delay > 0 {
 		opts = append(opts, taskforge.WithDelay(*delay))
+	}
+	if *idempotencyKey != "" {
+		opts = append(opts, taskforge.WithIdempotencyKey(*idempotencyKey))
 	}
 	id, err := app.Enqueue(ctx, *name, json.RawMessage(*payload), opts...)
 	if err != nil {
