@@ -103,7 +103,26 @@ Example formula:
 retry_delay = base * 2^attempt
 ```
 
-Status: `TODO`
+Delivered:
+
+- `task.RetryPolicy` with configurable `MaxAttempts`, `InitialDelay`,
+  `MaxDelay`, and `Multiplier`
+- exponential backoff calculation via `RetryPolicy.NextDelay`
+- worker-side retry rescheduling by re-enqueuing the task with a future
+  `ScheduledAt` timestamp
+- public configuration through `Config.DefaultRetryPolicy` and
+  `taskforge.WithRetryPolicy(...)`
+- unit coverage for retry delay calculation and retry rescheduling behavior
+
+Acceptance criteria:
+
+- [x] retry delay grows exponentially and respects the configured cap
+- [x] retryable failures are re-enqueued with incremented attempt metadata
+- [x] callers can override retry policy defaults per task
+- [x] retry exhaustion stops re-enqueueing and leaves terminal handling to the
+  later reliability milestones
+
+Status: `DONE`
 
 ### Milestone 6: Dead Letter Queue
 
