@@ -231,13 +231,97 @@ Status: `DONE`
 
 ### Milestone 8: Idempotency
 
-Prevent duplicate task execution.
+Prevent duplicate logical tasks from being admitted more than once across
+processes.
+
+Problem
+
+Now that Taskforge supports Redis-backed cross-process execution, duplicate
+enqueue requests can create multiple task records and multiple broker messages
+for what is logically the same job. Milestone 8 closes that correctness gap.
+
+Scope
+
+Add optional enqueue-time idempotency keyed by a caller-supplied string.
 
 Features:
 
-- deduplication keys
-- idempotency enforcement
-- task locking
+- idempotency key on enqueue
+- atomic claim-or-reuse behavior
+- shared Redis-backed idempotency store
+- in-memory implementation for tests and local parity
+- duplicate enqueue returns the canonical existing task ID
+- rollback of idempotency claim if enqueue fails
+- defined replay behavior for DLQ interaction
+
+Non-goals
+
+Do not include:
+
+- generic distributed task locking
+- worker-side exactly-once execution guarantees
+- automatic reuse expiry or key TTL policies
+- idempotency scopes or partitions beyond a single key string
+- operator APIs for manual key release
+- PostgreSQL or NATS implementations
+
+Behavior
+
+If `Enqueue` is called without an idempotency key:
+
+- preserve current behavior
+
+If `Enqueue` is called with an idempotency key:
+
+- first caller atomically claims the key and creates a new task
+- later callers with the same key do not enqueue a second task
+- later callers receive the original task ID
+
+Terminal failures do not free the key automatically.
+DLQ replay must use a fresh task identity and must not be blocked by the
+original key.
+
+API
+
+Add:
+
+- `taskforge.WithIdempotencyKey(key string)`
+
+Extend the internal task message model to carry:
+
+- `IdempotencyKey string`
+
+Implementation
+
+Add a new internal storage boundary for idempotency records:
+
+- `internal/idempotency/`
+
+Provide:
+
+- memory backend
+- Redis backend
+
+Wire it into `App` alongside broker, result, and DLQ.
+
+Enqueue path must:
+
+1. build the task message
+2. atomically claim or reuse the idempotency key
+3. enqueue only if claim succeeded as new
+4. roll back the claim if broker enqueue fails
+
+Acceptance criteria
+
+- [ ] two enqueue calls with the same idempotency key return the same task ID
+- [ ] only one broker message is created for a given idempotency key
+- [ ] concurrent enqueue attempts from different processes behave correctly with Redis
+- [ ] enqueue failure does not leave a stale idempotency claim behind
+- [ ] duplicate enqueue after terminal task failure still returns the original task ID
+- [ ] enqueue calls without idempotency keys preserve current behavior
+- [ ] DLQ replay remains usable and is not blocked by the original task's idempotency key
+- [ ] unit tests cover in-memory behavior and race cases
+- [ ] Redis integration tests cover cross-process duplicate enqueue
 
 Status: `TODO`
 

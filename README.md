@@ -196,6 +196,12 @@ internal/worker/     Worker pool and execution loop
 pkg/taskforge/       Public API
 ```
 
+## Additional Docs
+
+- [Workflow Diagram](./WORKFLOW.md)
+- [Architecture](./ARCHITECTURE.md)
+- [Milestones](./MILESTONES.md)
+
 ## Roadmap
 
 - [x] Redis broker implementation
