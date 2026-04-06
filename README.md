@@ -1,13 +1,13 @@
 # taskforge
 
-Taskforge is a Go prototype for in-process background job execution. It gives
-you a task registry, worker pool, delayed jobs, retries, periodic schedules,
-and result tracking behind a small API.
+Taskforge is a Go prototype for background job execution. It gives you a task
+registry, worker pool, delayed jobs, retries, periodic schedules, result
+tracking, DLQ support, and enqueue-time idempotency behind a small API.
 
-The project now supports both in-memory and Redis-backed broker/result
-components. The in-memory path is still the default for the demo and most unit
-tests; Redis is used for cross-process integration tests and persistent broker
-development.
+The project now supports both in-memory and Redis-backed broker, result, DLQ,
+and idempotency components. The in-memory path is still the default for the
+demo and most unit tests; Redis is used for cross-process integration tests
+and persistent execution flows.
 
 > Status: prototype / work-in-progress.
 > Redis-backed multi-process execution now exists behind the backend
@@ -25,6 +25,8 @@ Taskforge is influenced by [Celery](https://docs.celeryq.dev),
 | In-memory result backend | Result persistence with TTL expiry |
 | Redis broker | Shared ready/delayed queues with in-flight reservation recovery |
 | Redis result backend | Shared cross-process task result storage |
+| DLQ support | Dead-letter persistence, inspection, replay, and purge |
+| Enqueue idempotency | Canonical task reuse across duplicate enqueue requests |
 | Worker pool | Configurable concurrency and graceful shutdown |
 | Retry policy | Exponential backoff with max-attempt controls |
 | Periodic tasks | Interval scheduling via `EverySchedule` |
@@ -87,8 +89,8 @@ Environment overrides:
 
 The `demo` command is still the fastest fully self-contained path.
 
-The CLI now accepts backend-selection flags for `worker`, `enqueue`, and
-`result`. If you leave the defaults in place, each invocation creates its own
+The CLI now accepts backend-selection flags for `worker`, `enqueue`, `result`,
+and `dlq`. If you leave the defaults in place, each invocation creates its own
 isolated in-memory state. Those processes do not communicate across process
 boundaries:
 
@@ -102,12 +104,16 @@ That means, with default memory settings:
 
 - `worker` cannot consume tasks created by a separate `enqueue` process
 - `result` cannot see results created by a separate worker process
-- for real end-to-end shared-state behavior, configure Redis-backed broker and result backends
+- `dlq` inspection only sees entries created in the same process
+- duplicate enqueue protection is only shared across processes when the
+  idempotency backend is also configured to use Redis
+- for real end-to-end shared-state behavior, configure Redis-backed broker,
+  result, DLQ, and idempotency backends
 
 ## Using It As a Library
 
 For in-process experimentation, embed Taskforge directly so the app, worker,
-and result backend share the same in-memory state.
+and in-memory backends share the same local state.
 
 ```go
 package main

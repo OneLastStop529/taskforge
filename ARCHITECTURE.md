@@ -2,8 +2,9 @@
 
 Taskforge is a task execution platform written in Go.
 
-At its current stage, Taskforge is an in-process task runtime scaffold designed
-to evolve into a distributed, cloud-native task platform.
+At its current stage, Taskforge is a prototype task runtime that still defaults
+to in-process execution, but now also supports Redis-backed multi-process task
+delivery, result storage, DLQ inspection, and enqueue-time idempotency.
 
 This document describes the system architecture, execution flow, and the
 planned evolution of the platform.
@@ -27,15 +28,19 @@ a production-style distributed task platform.
 
 ## 2. Current Architecture
 
-At the moment, Taskforge runs as a single-process or demo-oriented system with
-in-memory components.
+Taskforge now supports two operating modes:
+
+- in-process/demo-oriented execution with in-memory backends
+- multi-process execution with Redis-backed broker, result, DLQ, and
+  idempotency backends
 
 ### Core components
 
 #### App
 
 - top-level orchestration object
-- wires together task registry, broker, result backend, scheduler, and worker runtime
+- wires together task registry, broker, result backend, DLQ backend,
+  idempotency backend, scheduler, and worker runtime
 
 #### Task Registry
 
@@ -45,7 +50,7 @@ in-memory components.
 #### Broker
 
 - queue abstraction for task delivery
-- current implementation is in-memory
+- implementations: memory and Redis
 
 #### Worker Runtime
 
@@ -56,7 +61,17 @@ in-memory components.
 #### Result Backend
 
 - stores execution results and task status
-- current implementation is in-memory
+- implementations: memory and Redis
+
+#### DLQ Backend
+
+- stores terminal failure inspection records
+- implementations: memory and Redis
+
+#### Idempotency Backend
+
+- stores enqueue-time claim-or-reuse records keyed by caller-supplied strings
+- implementations: memory and Redis
 
 #### Scheduler
 
@@ -69,20 +84,25 @@ in-memory components.
 +------------------+
 |       App        |
 +------------------+
-   |    |    |    |
-   |    |    |    |
-   |    |    |    +-------------------+
-   |    |    +----------------------> |
-   |    |                             | Scheduler
-   |    |    +-------------------+    |
-   |    +----------------------> |    |
-   |                             | Broker
-   |    +-------------------+    |
-   +----------------------> |    |
+   |    |    |    |    |    |
+   |    |    |    |    |    +-------------------+
+   |    |    |    |    +----------------------> |
+   |    |    |    |                             | Scheduler
+   |    |    |    +-------------------+         |
+   |    |    +----------------------> |         |
+   |    |                             | Broker
+   |    +-------------------+         |
+   +----------------------> |         |
                              | Result Backend
    +-------------------+    |
    +------------------> |    |
                         | Task Registry
+   +-------------------+    |
+   +------------------> |    |
+                        | DLQ Backend
+   +-------------------+    |
+   +------------------> |    |
+                        | Idempotency Backend
                         +-------------------+
 ```
 
@@ -95,16 +115,21 @@ Client / CLI
  Enqueue Task
     |
     v
+ Idempotency Backend
+    |
+    v
   Broker
     |
     v
- Worker Runtime
+Worker Runtime
     |
     v
- Task Handler
+Task Handler
     |
     v
- Result Backend
+Result Backend
+
+Terminal failure --> DLQ Backend
 ```
 
 ## 3. Task Lifecycle
@@ -619,11 +644,12 @@ Assume retries and duplicates are possible in distributed environments.
 Do not over-claim maturity early. Let the architecture evolve in visible
 stages.
 
-## 14. Near-Term Priorities
+## 14. Recent Milestones And Next Work
 
-Persistence is now implemented for the Redis path.
+Redis-backed persistence, DLQ support, and enqueue idempotency are now
+implemented for the current architecture.
 
-### Next recommended milestone
+### Recently completed milestones
 
 #### Milestone 6: Dead Letter Queue
 
@@ -770,6 +796,41 @@ Non-goals for the first milestone 7 cut:
 - full DLQ inspection CLI
 - task deduplication and locking
 
+#### Milestone 8: Idempotency
+
+Status: implemented for memory and Redis backends.
+
+Implemented shape:
+
+- `taskforge.WithIdempotencyKey(...)` adds optional enqueue-time deduplication
+- `internal/idempotency` defines the storage boundary with memory and Redis
+  backends
+- duplicate enqueue returns the canonical existing task ID instead of
+  enqueuing a second logical task
+- enqueue rollback releases the idempotency claim if broker admission fails
+- DLQ replay clears the original idempotency key so replay remains usable
+
+Verification:
+
+- package tests cover canonical reuse, rollback, and in-process race behavior
+- Redis integration tests cover cross-process duplicate enqueue and replay
+  interaction
+
+### Next recommended milestone
+
+#### Milestone 9: Structured Logging
+
+Status: next open milestone.
+
+Why this is the highest-ROI next step:
+
+- the runtime now has enough durable state and operational branches that
+  human-readable debugging through ad hoc logs is starting to break down
+- worker retries, DLQ transitions, Redis dequeue/reservation behavior, and
+  idempotent enqueue reuse all benefit from structured event logs
+- logging is a lower-risk observability step than metrics or tracing and will
+  make later milestone verification easier
+
 ## 15. Summary
 
 Taskforge currently provides:
@@ -778,6 +839,9 @@ Taskforge currently provides:
 - a worker runtime
 - retry-aware execution
 - scheduler scaffolding
+- DLQ persistence, inspection, replay, and purge
+- Redis-backed multi-process execution
+- enqueue-time idempotency
 - broker and result abstractions
 
 Taskforge does not yet provide:
