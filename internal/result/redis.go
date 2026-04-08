@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	taskredis "github.com/OneLastStop529/taskforge/internal/redis"
@@ -21,6 +22,7 @@ type RedisConfig struct {
 type RedisClient interface {
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
 	Get(ctx context.Context, key string) ([]byte, error)
+	ScanKeys(ctx context.Context, pattern string, count int64) ([]string, error)
 	Close() error
 }
 
@@ -48,6 +50,24 @@ func (c *goRedisClient) Get(ctx context.Context, key string) ([]byte, error) {
 		return nil, err
 	}
 	return value, nil
+}
+
+func (c *goRedisClient) ScanKeys(ctx context.Context, pattern string, count int64) ([]string, error) {
+	var (
+		cursor uint64
+		keys   []string
+	)
+	for {
+		batch, next, err := c.client.Scan(ctx, cursor, pattern, count).Result()
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, batch...)
+		cursor = next
+		if cursor == 0 {
+			return keys, nil
+		}
+	}
 }
 
 func (c *goRedisClient) Close() error {
@@ -103,6 +123,38 @@ func (b *RedisBackend) GetResult(ctx context.Context, id string) (*task.Result, 
 		return nil, fmt.Errorf("taskforge: unmarshal redis result %q: %w", id, err)
 	}
 	return &r, nil
+}
+
+// ResolveResultID resolves a full task ID from an exact or unique prefix.
+func (b *RedisBackend) ResolveResultID(ctx context.Context, idOrPrefix string) (string, error) {
+	data, err := b.redisClient.Get(ctx, b.key(idOrPrefix))
+	if err != nil {
+		return "", fmt.Errorf("taskforge: get redis result %q: %w", idOrPrefix, err)
+	}
+	if data != nil {
+		return idOrPrefix, nil
+	}
+
+	keys, err := b.redisClient.ScanKeys(ctx, b.key(idOrPrefix)+"*", 100)
+	if err != nil {
+		return "", fmt.Errorf("taskforge: scan redis result ids for prefix %q: %w", idOrPrefix, err)
+	}
+
+	var match string
+	for _, key := range keys {
+		id := strings.TrimPrefix(key, b.keyPrefix)
+		if !strings.HasPrefix(id, idOrPrefix) {
+			continue
+		}
+		if match != "" {
+			return "", fmt.Errorf("taskforge: result id prefix %q is ambiguous", idOrPrefix)
+		}
+		match = id
+	}
+	if match == "" {
+		return "", fmt.Errorf("taskforge: result not found for task %q", idOrPrefix)
+	}
+	return match, nil
 }
 
 // Close releases any resources held by the backend.

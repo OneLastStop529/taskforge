@@ -73,3 +73,41 @@ func TestMemoryBackend_Overwrite(t *testing.T) {
 		t.Errorf("expected SUCCESS after overwrite, got %q", got.State)
 	}
 }
+
+func TestMemoryBackend_ResolveResultID(t *testing.T) {
+	be := result.NewMemoryBackend(0)
+	defer be.Close() //nolint:errcheck
+
+	ctx := context.Background()
+	_ = be.SetResult(ctx, &task.Result{ID: "abc12345", Name: "t", State: task.StateSuccess})
+	_ = be.SetResult(ctx, &task.Result{ID: "def67890", Name: "t", State: task.StateSuccess})
+
+	id, err := be.ResolveResultID(ctx, "abc1")
+	if err != nil {
+		t.Fatalf("ResolveResultID unique prefix: %v", err)
+	}
+	if id != "abc12345" {
+		t.Fatalf("got %q, want %q", id, "abc12345")
+	}
+
+	id, err = be.ResolveResultID(ctx, "abc12345")
+	if err != nil {
+		t.Fatalf("ResolveResultID exact: %v", err)
+	}
+	if id != "abc12345" {
+		t.Fatalf("got %q, want %q", id, "abc12345")
+	}
+}
+
+func TestMemoryBackend_ResolveResultIDAmbiguous(t *testing.T) {
+	be := result.NewMemoryBackend(0)
+	defer be.Close() //nolint:errcheck
+
+	ctx := context.Background()
+	_ = be.SetResult(ctx, &task.Result{ID: "abc12345", Name: "t", State: task.StateSuccess})
+	_ = be.SetResult(ctx, &task.Result{ID: "abc67890", Name: "t", State: task.StateSuccess})
+
+	if _, err := be.ResolveResultID(ctx, "abc"); err == nil {
+		t.Fatal("expected ambiguity error")
+	}
+}

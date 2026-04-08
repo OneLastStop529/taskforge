@@ -13,6 +13,8 @@ type Backend interface {
 	SetResult(ctx context.Context, r *task.Result) error
 	// GetResult retrieves the result for a task ID.
 	GetResult(ctx context.Context, id string) (*task.Result, error)
+	// ResolveResultID resolves a full task ID from an exact or unique prefix.
+	ResolveResultID(ctx context.Context, idOrPrefix string) (string, error)
 	// Close releases any resources held by the backend.
 	Close() error
 }

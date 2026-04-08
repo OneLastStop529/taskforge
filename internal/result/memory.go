@@ -3,6 +3,7 @@ package result
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,6 +83,37 @@ func (b *MemoryBackend) GetResult(_ context.Context, id string) (*task.Result, e
 		return nil, fmt.Errorf("taskforge: result expired for task %q", id)
 	}
 	return e.result, nil
+}
+
+// ResolveResultID resolves a full task ID from an exact or unique prefix.
+func (b *MemoryBackend) ResolveResultID(_ context.Context, idOrPrefix string) (string, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if e, ok := b.entries[idOrPrefix]; ok {
+		if b.ttl == 0 || time.Now().Before(e.expiresAt) {
+			return idOrPrefix, nil
+		}
+	}
+
+	var match string
+	now := time.Now()
+	for id, e := range b.entries {
+		if b.ttl > 0 && now.After(e.expiresAt) {
+			continue
+		}
+		if !strings.HasPrefix(id, idOrPrefix) {
+			continue
+		}
+		if match != "" {
+			return "", fmt.Errorf("taskforge: result id prefix %q is ambiguous", idOrPrefix)
+		}
+		match = id
+	}
+	if match == "" {
+		return "", fmt.Errorf("taskforge: result not found for task %q", idOrPrefix)
+	}
+	return match, nil
 }
 
 // Close stops the GC goroutine.
