@@ -1,0 +1,159 @@
+#compdef taskforge
+
+local -a backend_values
+backend_values=(memory redis)
+
+_taskforge_worker() {
+  _arguments -s \
+    '--concurrency=[number of concurrent workers]:count:' \
+    '--queue=[queue name to consume from]:queue:' \
+    '--broker-backend=[broker backend]:backend:(${backend_values[@]})' \
+    '--result-backend=[result backend]:backend:(${backend_values[@]})' \
+    '--dlq-backend=[DLQ backend]:backend:(${backend_values[@]})' \
+    '--idempotency-backend=[idempotency backend]:backend:(${backend_values[@]})' \
+    '--redis-addr=[Redis address]:redis address:' \
+    '--redis-username=[Redis username]:redis username:' \
+    '--redis-password=[Redis password]:redis password:' \
+    '--redis-db=[Redis database index]:redis db:'
+}
+
+_taskforge_enqueue() {
+  _arguments -s \
+    '--name=[task name]:task name:' \
+    '--payload=[JSON payload]:payload:' \
+    '--queue=[destination queue]:queue:' \
+    '--delay=[delay before the task runs]:duration:' \
+    '--idempotency-key=[enqueue idempotency key]:idempotency key:' \
+    '--broker-backend=[broker backend]:backend:(${backend_values[@]})' \
+    '--result-backend=[result backend]:backend:(${backend_values[@]})' \
+    '--dlq-backend=[DLQ backend]:backend:(${backend_values[@]})' \
+    '--idempotency-backend=[idempotency backend]:backend:(${backend_values[@]})' \
+    '--redis-addr=[Redis address]:redis address:' \
+    '--redis-username=[Redis username]:redis username:' \
+    '--redis-password=[Redis password]:redis password:' \
+    '--redis-db=[Redis database index]:redis db:'
+}
+
+_taskforge_result() {
+  _arguments -s \
+    '--id=[task ID]:task id:' \
+    '--broker-backend=[broker backend]:backend:(${backend_values[@]})' \
+    '--result-backend=[result backend]:backend:(${backend_values[@]})' \
+    '--dlq-backend=[DLQ backend]:backend:(${backend_values[@]})' \
+    '--idempotency-backend=[idempotency backend]:backend:(${backend_values[@]})' \
+    '--redis-addr=[Redis address]:redis address:' \
+    '--redis-username=[Redis username]:redis username:' \
+    '--redis-password=[Redis password]:redis password:' \
+    '--redis-db=[Redis database index]:redis db:'
+}
+
+_taskforge_dlq_list() {
+  _arguments -s \
+    '--offset=[offset into newest-first DLQ entries]:offset:' \
+    '--limit=[maximum number of DLQ IDs to return]:limit:' \
+    '--result-backend=[result backend]:backend:(${backend_values[@]})' \
+    '--dlq-backend=[DLQ backend]:backend:(${backend_values[@]})' \
+    '--idempotency-backend=[idempotency backend]:backend:(${backend_values[@]})' \
+    '--redis-addr=[Redis address]:redis address:' \
+    '--redis-username=[Redis username]:redis username:' \
+    '--redis-password=[Redis password]:redis password:' \
+    '--redis-db=[Redis database index]:redis db:'
+}
+
+_taskforge_dlq_get() {
+  _arguments -s \
+    '--id=[dead-lettered task ID]:task id:' \
+    '--result-backend=[result backend]:backend:(${backend_values[@]})' \
+    '--dlq-backend=[DLQ backend]:backend:(${backend_values[@]})' \
+    '--idempotency-backend=[idempotency backend]:backend:(${backend_values[@]})' \
+    '--redis-addr=[Redis address]:redis address:' \
+    '--redis-username=[Redis username]:redis username:' \
+    '--redis-password=[Redis password]:redis password:' \
+    '--redis-db=[Redis database index]:redis db:'
+}
+
+_taskforge_dlq_replay() {
+  _arguments -s \
+    '--id=[dead-lettered task ID]:task id:' \
+    '--queue=[optional queue override for replayed task]:queue:' \
+    '--delay=[delay before replay runs]:duration:' \
+    '--broker-backend=[broker backend]:backend:(${backend_values[@]})' \
+    '--result-backend=[result backend]:backend:(${backend_values[@]})' \
+    '--dlq-backend=[DLQ backend]:backend:(${backend_values[@]})' \
+    '--idempotency-backend=[idempotency backend]:backend:(${backend_values[@]})' \
+    '--redis-addr=[Redis address]:redis address:' \
+    '--redis-username=[Redis username]:redis username:' \
+    '--redis-password=[Redis password]:redis password:' \
+    '--redis-db=[Redis database index]:redis db:'
+}
+
+_taskforge_dlq_purge() {
+  _arguments -s \
+    '--id=[dead-lettered task ID]:task id:' \
+    '--result-backend=[result backend]:backend:(${backend_values[@]})' \
+    '--dlq-backend=[DLQ backend]:backend:(${backend_values[@]})' \
+    '--idempotency-backend=[idempotency backend]:backend:(${backend_values[@]})' \
+    '--redis-addr=[Redis address]:redis address:' \
+    '--redis-username=[Redis username]:redis username:' \
+    '--redis-password=[Redis password]:redis password:' \
+    '--redis-db=[Redis database index]:redis db:'
+}
+
+_taskforge_dlq() {
+  local curcontext="$curcontext" state
+
+  _arguments -C \
+    '1:dlq command:(list get replay purge)' \
+    '*::dlq args:->dlq'
+
+  case $state in
+    dlq)
+      case $words[2] in
+        list)
+          _taskforge_dlq_list
+          ;;
+        get)
+          _taskforge_dlq_get
+          ;;
+        replay)
+          _taskforge_dlq_replay
+          ;;
+        purge)
+          _taskforge_dlq_purge
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_taskforge() {
+  local curcontext="$curcontext" state
+
+  _arguments -C \
+    '1:command:(demo worker enqueue result dlq)' \
+    '*::args:->args'
+
+  case $state in
+    args)
+      case $words[2] in
+        demo)
+          return 0
+          ;;
+        worker)
+          _taskforge_worker
+          ;;
+        enqueue)
+          _taskforge_enqueue
+          ;;
+        result)
+          _taskforge_result
+          ;;
+        dlq)
+          _taskforge_dlq
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_taskforge "$@"

@@ -2,6 +2,7 @@ package result_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,17 @@ func (c *fakeRedisClient) Get(_ context.Context, key string) ([]byte, error) {
 func (c *fakeRedisClient) Close() error {
 	c.closed = true
 	return nil
+}
+
+func (c *fakeRedisClient) ScanKeys(_ context.Context, pattern string, _ int64) ([]string, error) {
+	prefix := strings.TrimSuffix(pattern, "*")
+	keys := make([]string, 0)
+	for key := range c.values {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
 }
 
 func TestRedisBackend_SetAndGet(t *testing.T) {
@@ -101,6 +113,46 @@ func TestRedisBackend_Close(t *testing.T) {
 	}
 	if !client.closed {
 		t.Fatal("expected redis client to be closed")
+	}
+}
+
+func TestRedisBackend_ResolveResultID(t *testing.T) {
+	client := newFakeRedisClient()
+	be := result.NewRedisBackendWithClient(client, 0, "taskforge:test:")
+	defer be.Close() //nolint:errcheck
+
+	ctx := context.Background()
+	_ = be.SetResult(ctx, &task.Result{ID: "abc12345", Name: "t", State: task.StateSuccess})
+	_ = be.SetResult(ctx, &task.Result{ID: "def67890", Name: "t", State: task.StateSuccess})
+
+	id, err := be.ResolveResultID(ctx, "abc1")
+	if err != nil {
+		t.Fatalf("ResolveResultID unique prefix: %v", err)
+	}
+	if id != "abc12345" {
+		t.Fatalf("got %q, want %q", id, "abc12345")
+	}
+
+	id, err = be.ResolveResultID(ctx, "abc12345")
+	if err != nil {
+		t.Fatalf("ResolveResultID exact: %v", err)
+	}
+	if id != "abc12345" {
+		t.Fatalf("got %q, want %q", id, "abc12345")
+	}
+}
+
+func TestRedisBackend_ResolveResultIDAmbiguous(t *testing.T) {
+	client := newFakeRedisClient()
+	be := result.NewRedisBackendWithClient(client, 0, "taskforge:test:")
+	defer be.Close() //nolint:errcheck
+
+	ctx := context.Background()
+	_ = be.SetResult(ctx, &task.Result{ID: "abc12345", Name: "t", State: task.StateSuccess})
+	_ = be.SetResult(ctx, &task.Result{ID: "abc67890", Name: "t", State: task.StateSuccess})
+
+	if _, err := be.ResolveResultID(ctx, "abc"); err == nil {
+		t.Fatal("expected ambiguity error")
 	}
 }
 

@@ -356,6 +356,11 @@ func (a *App) GetResult(ctx context.Context, id string) (*Result, error) {
 	return a.backend.GetResult(ctx, id)
 }
 
+// ResolveResultID resolves a full task ID from an exact or unique prefix.
+func (a *App) ResolveResultID(ctx context.Context, idOrPrefix string) (string, error) {
+	return a.backend.ResolveResultID(ctx, idOrPrefix)
+}
+
 // ReplayDLQEntry re-enqueues a dead-lettered task using a new task ID.
 func (a *App) ReplayDLQEntry(ctx context.Context, id string, opts ...EnqueueOption) (string, error) {
 	entry, err := a.dlq.GetEntry(ctx, id)

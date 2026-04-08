@@ -1,522 +1,233 @@
-# Taskforge Milestones
+# Taskforge Milestones (v1 Roadmap)
 
-Taskforge is a cloud-native task execution platform written in Go.
+## 🎯 Goal
 
-This document tracks the roadmap from an in-process prototype to a distributed,
-cloud-native task platform.
+Ship **Taskforge v1** as a **production-ready async job execution platform** with:
 
-## Phase 1: Core Runtime (Milestones 1-4)
+* Redis-backed distributed execution
+* Clear delivery semantics (at-least-once)
+* Observable job lifecycle
+* Real-world workload integration
+* Operational tooling (inspection, retry, DLQ)
 
-Goal: Build the basic task execution runtime.
+---
 
-### Milestone 1: Project Structure ✅
+# 🧱 Phase 1 — Core Engine (✅ Completed)
 
-Create a clean Go project layout.
+> Build core primitives for async job execution
 
-Features:
+### Includes:
 
-- Go module
-- repo structure
+* Worker pool + concurrency model
+* Broker abstraction
+* Redis-backed broker (ready/delayed/in-flight queues)
+* Retry + exponential backoff
+* Dead Letter Queue (DLQ)
+* Result backend (Redis / memory)
+* Enqueue-time idempotency
+* Scheduling (delay / periodic)
 
-Example layout:
+### Status:
 
-```text
-cmd/
-internal/
-pkg/
-configs/
-```
+✅ Completed (Milestone 1–9)
 
-Status: `DONE`
+---
 
-### Milestone 2: CLI Interface ✅
+# 🚀 Phase 2 — V1 Productization (🔥 Current Focus)
 
-Provide CLI commands to interact with the system.
+> Transform taskforge from a feature-complete prototype into a **coherent, usable system**
 
-Commands:
+---
 
-- `taskforge worker`
-- `taskforge enqueue`
-- `taskforge result`
-- `taskforge demo`
+## ✅ Milestone 9 — Golden Path (Single Runtime Model)
 
-Status: `DONE`
+### Goal:
 
-### Milestone 3: Task Model ✅
+Establish **one correct way to run Taskforge in real-world scenarios**
 
-Implement the core task abstraction.
+### Deliverables:
 
-Features:
+* Redis becomes the **default and recommended backend**
+* CLI commands work across processes:
 
-- task registry
-- payload handling
-- task metadata
-- result model
+  * `taskforge worker`
+  * `taskforge enqueue`
+  * `taskforge result`
+* Remove ambiguity between memory vs Redis execution paths
+* Provide `docker-compose` setup for Redis
 
-Example:
+### Success Criteria:
 
-```go
-type Task struct {
-    ID         string
-    Payload    any
-    Status     string
-    RetryCount int
-    Timeout    time.Duration
-    Queue      string
-    Priority   int
-}
-```
+* Multiple processes share state correctly
+* No reliance on in-memory backend for normal usage
+* End-to-end flow works out of the box
 
-Status: `DONE`
+---
 
-### Milestone 4: Worker Runtime ✅
+## 🔹 Milestone 10 — System Model & Semantics
 
-Implement the task execution engine.
+### Goal:
 
-Features:
+Clearly define how the system works
 
-- worker pool
-- goroutine concurrency
-- panic recovery
-- task timeout
-- retry execution
+### Deliverables:
 
-Status: `DONE`
+* Job lifecycle definition:
 
-## Phase 2: Reliability (Milestones 5-8)
+  ```
+  QUEUED → LEASED → RUNNING → SUCCESS
+                        ↘ RETRY → DLQ
+  ```
 
-Goal: Make task execution reliable and fault-tolerant.
+* Delivery semantics:
 
-### Milestone 5: Retry Strategy
+  * at-least-once execution
+  * retry behavior
+  * visibility timeout / lease model
 
-Improve retry logic.
+* Architecture diagram:
 
-Features:
+  * Producer → Broker → Worker → Result → DLQ
 
-- exponential backoff
-- retry delay scheduling
-- configurable retry policies
+### Success Criteria:
 
-Example formula:
+* README explains system behavior clearly
+* Can explain failure + retry + recovery paths in interviews
 
-```text
-retry_delay = base * 2^attempt
-```
+---
 
-Delivered:
+## 🔹 Milestone 11 — Real Workload Integration
 
-- `task.RetryPolicy` with configurable `MaxAttempts`, `InitialDelay`,
-  `MaxDelay`, and `Multiplier`
-- exponential backoff calculation via `RetryPolicy.NextDelay`
-- worker-side retry rescheduling by re-enqueuing the task with a future
-  `ScheduledAt` timestamp
-- public configuration through `Config.DefaultRetryPolicy` and
-  `taskforge.WithRetryPolicy(...)`
-- unit coverage for retry delay calculation and retry rescheduling behavior
+### Goal:
 
-Acceptance criteria:
+Validate taskforge with a **real backend use case**
 
-- [x] retry delay grows exponentially and respects the configured cap
-- [x] retryable failures are re-enqueued with incremented attempt metadata
-- [x] callers can override retry policy defaults per task
-- [x] retry exhaustion stops re-enqueueing and leaves terminal handling to the
-  later reliability milestones
+### Deliverables:
 
-Status: `DONE`
+* Integration with atlas-rag ingestion pipeline:
 
-### Milestone 6: Dead Letter Queue
+  * document upload → parse → chunk → embed → store
+* Replace synchronous ingestion with async jobs
+* Example project demonstrating full pipeline
 
-Handle permanently failed tasks.
+### Success Criteria:
 
-Features:
+* Taskforge is used in a real system
+* End-to-end async flow is reproducible
+* Jobs have meaningful payloads and results
 
-- max retry limit
-- DLQ storage
-- DLQ inspection
-- DLQ replay
+---
 
-Recommended order of action:
+## 🔹 Milestone 12 — Observability & Admin
 
-1. persist terminally failed task envelopes in a Redis DLQ keyspace
-2. include final failure metadata needed for inspection and replay decisions
-3. add library APIs to list and fetch DLQ entries across app instances
-4. add CLI inspection support for Redis-backed DLQ state
-5. add tests covering retry exhaustion, DLQ persistence, and cross-process reads
+### Goal:
 
-Why this comes next:
+Make the system **operable and inspectable**
 
-- persistence is now in place, so failure state can be shared across processes
-- retries already exist, so DLQ closes the reliability loop with immediate
-  operator value
-- it creates a clean foundation for later idempotency and observability work
+### Deliverables:
 
-Delivered:
+#### Metrics:
 
-- dedicated DLQ storage boundary with memory and Redis backends
-- terminal-failure persistence from the worker on retry exhaustion
-- library APIs to fetch, list, and replay DLQ entries
-- CLI support for `dlq list`, `dlq get`, and `dlq replay`
-- unit and Redis integration coverage for DLQ persistence, inspection, and replay
+* queue depth
+* job latency
+* retry count
+* success / failure rate
 
-Proposed scope split:
+#### Admin APIs / CLI:
 
-1. DLQ model
+* list jobs by status
+* inspect job (payload, attempts)
+* retry failed / DLQ jobs
+* cancel queued jobs
 
-- define a DLQ entry that captures the original task envelope, final error,
-  queue, final attempt count, retry policy, and failure timestamps
-- decide whether the result backend continues to expose terminal tasks as
-  `FAILED` while the DLQ tracks inspection state separately
+#### Logging:
 
-2. Storage boundary
+* structured logs
+* job-level context (job_id, attempt)
 
-- introduce a library boundary for writing, listing, and fetching DLQ entries
-- keep this separate from broker delivery concerns so inspection works even if
-  queue mechanics evolve later
+### Success Criteria:
 
-3. Worker integration
+* Can debug job failures without code changes
+* Can monitor system health
+* DLQ is inspectable and actionable
 
-- on retry exhaustion, persist the final result as today and also write a DLQ
-  entry before acking the broker reservation
-- treat DLQ persistence failure as operationally significant and log it clearly
+---
 
-4. API and CLI
+# 🧩 Phase 3 — Platform Extensions (Future)
 
-- expose app/library methods for listing DLQ IDs and fetching a DLQ entry
-- add CLI commands or subcommands for DLQ inspection against Redis-backed state
+> Extend taskforge into a full platform (post-v1)
 
-5. Verification
+---
 
-- cover retry exhaustion in unit tests around worker finalization
-- add Redis integration coverage for cross-process DLQ inspection
-- verify successful tasks and retryable failures do not create DLQ entries
+## 🔹 Milestone 13 — Multi-Tenancy & Quotas
 
-Acceptance criteria:
+* per-tenant job limits
+* concurrency control
+* rate limiting
 
-- [x] a task that exhausts retries is persisted to the DLQ exactly once
-- [x] the DLQ entry contains enough metadata to explain why retries stopped
-- [x] a different process can list and inspect the DLQ entry through Redis
-- [x] successful tasks and still-retrying tasks never appear in the DLQ
-- [x] the existing `result` path still reports terminal state for the task ID
+---
 
-Notes:
+## 🔹 Milestone 14 — Advanced Scheduling
 
-- replay currently re-enqueues the dead-lettered task under a fresh task ID
-- the original DLQ record is retained for audit and inspection
-- replay-resolution metadata and purge workflows remain deferred
+* cron jobs
+* distributed scheduler
+* time-based guarantees
 
-Status: `DONE`
+---
 
-### Milestone 7: Persistence Layer ⭐
+## 🔹 Milestone 15 — Workflow / DAG (Optional)
 
-Move from in-memory to persistent broker.
+* multi-step job orchestration
+* dependency graphs
+* long-running workflows
 
-Supported backends:
+---
 
-- Redis
-- PostgreSQL
-- NATS (optional)
+## 🔹 Milestone 16 — Cloud / Deployment
 
-Architecture:
+* containerized deployment
+* horizontal scaling
+* worker autoscaling
 
-```text
-API -> Broker -> Worker -> Result Store
-```
+---
 
-Delivered:
+# 🧠 Design Principles
 
-- Redis-backed broker with ready queues, delayed queues, in-flight reservation,
-  `Ack`, and lease-expiry recovery
-- Redis-backed result backend with shared cross-process result reads/writes
-- backend-selection/config plumbing while keeping in-memory as the default path
-- CLI flags for backend selection and Redis connection settings
-- integration coverage using separate app instances against a live Redis server
-- reproducible local Redis setup via `compose.yml`, `Makefile`, and README docs
+* **Simplicity first** — avoid over-engineering (no premature Kafka / workflow engine)
+* **Correctness over features** — reliable execution > more integrations
+* **Observable by default** — every job is traceable and debuggable
+* **Real workloads over demos** — prioritize integration with actual systems
 
-Acceptance criteria status:
+---
 
-- [x] a task enqueued by one process can be consumed by a different worker process
-- [x] `result` can read task state written by a different worker process
-- [x] delayed tasks survive worker restarts
-- [x] the in-memory implementations still pass the existing unit tests
-- [x] failed tasks retain enough metadata to support DLQ inspection next
+# 🏁 Definition of Done (v1)
 
-Follow-on work:
+Taskforge v1 is complete when:
 
-- DLQ replay-resolution metadata and purge semantics remain deferred
-- PostgreSQL and NATS remain deferred
-- observability and health endpoints remain later-phase work
+* A developer can:
 
-Status: `DONE`
+  1. Start Redis
+  2. Run worker
+  3. Enqueue jobs
+  4. Observe results
+  5. Debug failures
 
-### Milestone 8: Idempotency
+* System guarantees:
 
-Prevent duplicate logical tasks from being admitted more than once across
-processes.
+  * at-least-once execution
+  * retry + DLQ handling
+  * idempotency support
 
-Problem
+* Used in a real system (atlas-rag or equivalent)
 
-Now that Taskforge supports Redis-backed cross-process execution, duplicate
-enqueue requests can create multiple task records and multiple broker messages
-for what is logically the same job. Milestone 8 closes that correctness gap.
+---
 
-Scope
+# 🔥 Summary
 
-Add optional enqueue-time idempotency keyed by a caller-supplied string.
+Taskforge is evolving from:
 
-Features:
+> "a task queue implementation"
 
-- idempotency key on enqueue
-- atomic claim-or-reuse behavior
-- shared Redis-backed idempotency store
-- in-memory implementation for tests and local parity
-- duplicate enqueue returns the canonical existing task ID
-- rollback of idempotency claim if enqueue fails
-- defined replay behavior for DLQ interaction
+into:
 
-Non-goals
-
-Do not include:
-
-- generic distributed task locking
-- worker-side exactly-once execution guarantees
-- automatic reuse expiry or key TTL policies
-- idempotency scopes or partitions beyond a single key string
-- operator APIs for manual key release
-- PostgreSQL or NATS implementations
-
-Behavior
-
-If `Enqueue` is called without an idempotency key:
-
-- preserve current behavior
-
-If `Enqueue` is called with an idempotency key:
-
-- first caller atomically claims the key and creates a new task
-- later callers with the same key do not enqueue a second task
-- later callers receive the original task ID
-
-Terminal failures do not free the key automatically.
-DLQ replay must use a fresh task identity and must not be blocked by the
-original key.
-
-API
-
-Add:
-
-- `taskforge.WithIdempotencyKey(key string)`
-
-Extend the internal task message model to carry:
-
-- `IdempotencyKey string`
-
-Implementation
-
-Add a new internal storage boundary for idempotency records:
-
-- `internal/idempotency/`
-
-Provide:
-
-- memory backend
-- Redis backend
-
-Wire it into `App` alongside broker, result, and DLQ.
-
-Enqueue path must:
-
-1. build the task message
-2. atomically claim or reuse the idempotency key
-3. enqueue only if claim succeeded as new
-4. roll back the claim if broker enqueue fails
-
-Acceptance criteria
-
-- [x] two enqueue calls with the same idempotency key return the same task ID
-- [x] only one broker message is created for a given idempotency key
-- [x] concurrent enqueue attempts from different processes behave correctly with Redis
-- [x] enqueue failure does not leave a stale idempotency claim behind
-- [x] duplicate enqueue after terminal task failure still returns the original task ID
-- [x] enqueue calls without idempotency keys preserve current behavior
-- [x] DLQ replay remains usable and is not blocked by the original task's idempotency key
-- [x] unit tests cover in-memory behavior and race cases
-- [x] Redis integration tests cover cross-process duplicate enqueue
-
-Status: `DONE`
-
-## Phase 3: Observability (Milestones 9-12)
-
-Goal: Provide production-grade monitoring.
-
-### Milestone 9: Structured Logging
-
-Features:
-
-- JSON logs
-- request context logging
-- task execution logs
-
-Libraries:
-
-- `slog`
-- `zap`
-
-Status: `TODO`
-
-### Milestone 10: Metrics
-
-Integrate monitoring.
-
-Metrics:
-
-- queue size
-- job latency
-- worker utilization
-- task failures
-
-Stack:
-
-- Prometheus
-- Grafana
-
-Status: `TODO`
-
-### Milestone 11: Distributed Tracing
-
-Trace task execution across services.
-
-Stack:
-
-- OpenTelemetry
-
-Flow:
-
-```text
-API -> Queue -> Worker -> Result
-```
-
-Status: `TODO`
-
-### Milestone 12: Health Checks
-
-Expose service health endpoints.
-
-Endpoints:
-
-- `/health`
-- `/ready`
-
-Used by:
-
-- Kubernetes probes
-
-Status: `TODO`
-
-## Phase 4: Cloud Native Deployment (Milestones 13-16)
-
-Goal: Deploy Taskforge as a cloud-native system.
-
-### Milestone 13: Containerization
-
-Create container images.
-
-Artifacts:
-
-- `Dockerfile`
-- multi-stage build
-
-Status: `TODO`
-
-### Milestone 14: Local Dev Environment
-
-Run the stack locally.
-
-Tools:
-
-- `docker-compose`
-
-Services:
-
-- api
-- worker
-- redis
-- prometheus
-
-Status: `TODO`
-
-### Milestone 15: Kubernetes Deployment
-
-Deploy services to Kubernetes.
-
-Resources:
-
-- Deployment
-- Service
-- ConfigMap
-- Secret
-
-Status: `TODO`
-
-### Milestone 16: Autoscaling
-
-Scale workers automatically.
-
-Methods:
-
-- HPA
-- queue length metrics
-
-Status: `TODO`
-
-## Phase 5: Advanced Features (Milestones 17-20)
-
-Goal: Turn Taskforge into a workflow platform.
-
-### Milestone 17: Scheduled Tasks
-
-Features:
-
-- delayed tasks
-- cron scheduling
-
-Status: `TODO`
-
-### Milestone 18: Rate Limiting
-
-Control task throughput.
-
-Features:
-
-- per-queue rate limit
-- per-tenant limit
-
-Status: `TODO`
-
-### Milestone 19: DAG Workflows
-
-Support task dependencies.
-
-Example:
-
-```text
-Task B depends on Task A
-```
-
-Similar to:
-
-- Airflow
-- Temporal
-
-Status: `TODO`
-
-### Milestone 20: Web Dashboard
-
-Provide UI for monitoring.
-
-Features:
-
-- task status
-- worker stats
-- metrics view
-
-Status: `TODO`
+> "a distributed async execution platform for modern backend systems"

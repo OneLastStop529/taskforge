@@ -816,20 +816,31 @@ Verification:
 - Redis integration tests cover cross-process duplicate enqueue and replay
   interaction
 
+#### Milestone 9: Golden Path (Single Runtime Model)
+
+Status: implemented.
+
+Implemented shape:
+
+- the CLI now defaults to Redis-backed broker, result, DLQ, and idempotency
+  components
+- `taskforge worker`, `taskforge enqueue`, and `taskforge result` share state
+  across processes without extra backend flags
+- local Redis setup is provided through `compose.yml`
+- the in-memory runtime remains available explicitly for demo and test flows
+
+Verification:
+
+- existing Redis integration tests cover cross-process enqueue, worker
+  execution, result lookup, DLQ visibility, replay, and idempotency reuse
+- CLI config tests cover Redis-by-default behavior and explicit memory
+  overrides
+
 ### Next recommended milestone
 
-#### Milestone 9: Structured Logging
+#### Milestone 10: System Model & Semantics
 
 Status: next open milestone.
-
-Why this is the highest-ROI next step:
-
-- the runtime now has enough durable state and operational branches that
-  human-readable debugging through ad hoc logs is starting to break down
-- worker retries, DLQ transitions, Redis dequeue/reservation behavior, and
-  idempotent enqueue reuse all benefit from structured event logs
-- logging is a lower-risk observability step than metrics or tracing and will
-  make later milestone verification easier
 
 ## 15. Summary
 

@@ -5,13 +5,14 @@ registry, worker pool, delayed jobs, retries, periodic schedules, result
 tracking, DLQ support, and enqueue-time idempotency behind a small API.
 
 The project now supports both in-memory and Redis-backed broker, result, DLQ,
-and idempotency components. The in-memory path is still the default for the
-demo and most unit tests; Redis is used for cross-process integration tests
-and persistent execution flows.
+and idempotency components. Redis is now the default runtime model for the CLI
+and the recommended path for real multi-process usage. The in-memory path
+remains available for the demo, tests, and embedded single-process
+experimentation.
 
 > Status: prototype / work-in-progress.
-> Redis-backed multi-process execution now exists behind the backend
-> abstractions, but the CLI and local developer workflow are still evolving.
+> The Redis-backed CLI golden path now works across processes; system semantics,
+> observability, and production hardening are still evolving.
 
 Taskforge is influenced by [Celery](https://docs.celeryq.dev),
 [Temporal](https://temporal.io), and similar job-processing systems.
@@ -31,7 +32,8 @@ Taskforge is influenced by [Celery](https://docs.celeryq.dev),
 | Retry policy | Exponential backoff with max-attempt controls |
 | Periodic tasks | Interval scheduling via `EverySchedule` |
 | Per-task timeout | Handler context deadline support |
-| Demo CLI | End-to-end runnable example |
+| CLI runtime | `worker`, `enqueue`, `result`, and `dlq` share Redis state by default |
+| Demo CLI | Self-contained in-memory runnable example |
 
 ## Getting Started
 
@@ -39,7 +41,42 @@ Taskforge is influenced by [Celery](https://docs.celeryq.dev),
 
 - Go `1.24.13` or newer
 
-### 1. Run the demo
+### 1. Start local Redis
+
+```bash
+docker compose up -d redis
+```
+
+### 2. Run the CLI golden path
+
+Start a worker in one terminal:
+
+```bash
+go run ./cmd/taskforge worker
+```
+
+Enqueue a task from another terminal:
+
+```bash
+go run ./cmd/taskforge enqueue -name echo -payload '{"msg":"hello"}'
+```
+
+Fetch the result:
+
+```bash
+go run ./cmd/taskforge result -id <task-id>
+```
+
+The `result` command also accepts a unique task ID prefix:
+
+```bash
+go run ./cmd/taskforge result -id <task-id-prefix>
+```
+
+The built-in CLI worker registers an `echo` handler so the cross-process flow
+works out of the box against Redis.
+
+### 3. Run the demo
 
 This is the fastest way to confirm the project builds and the core flow works.
 
@@ -55,23 +92,53 @@ What the demo does:
 - enqueues several jobs
 - prints their results
 
-### 2. Build the CLI
+### 4. Build the CLI
 
 ```bash
 go build -o bin/taskforge ./cmd/taskforge
-./bin/taskforge demo
+./bin/taskforge worker
 ```
 
-### 3. Run the tests
+Or install it onto your `PATH`:
+
+```bash
+make install
+taskforge worker
+```
+
+### 4.1 Repo-local zsh completion
+
+If you use `zsh`, you can load completions for `taskforge` in the current shell
+without installing anything globally:
+
+```bash
+source ./scripts/taskforge-completion.zsh
+```
+
+That only affects the current shell session started in this repository. It does
+not modify your global `~/.zshrc` or system-wide completion paths.
+
+If you use `direnv`, the repo also includes a local [.envrc](/Users/onelaststop/Workspace/taskforge/.envrc) that prepends `./bin` to `PATH`.
+
+Enable it once:
+
+```bash
+direnv allow
+```
+
+`direnv` is intentionally not used to modify `FPATH`. That approach is easy to
+get wrong in existing zsh setups and can interfere with normal tab completion.
+Use the repo-local loader script instead when you want taskforge completion in
+the current shell:
+
+```bash
+source ./scripts/taskforge-completion.zsh
+```
+
+### 5. Run the tests
 
 ```bash
 go test ./...
-```
-
-### 4. Start local Redis for integration work
-
-```bash
-docker compose up -d redis
 ```
 
 Then run the Redis integration tests:
@@ -83,32 +150,34 @@ go test ./pkg/taskforge -run RedisIntegration -v
 Environment overrides:
 
 - `TASKFORGE_REDIS_ADDR` defaults to `127.0.0.1:6379`
-- `TASKFORGE_REDIS_DB` defaults to `15`
+- `TASKFORGE_REDIS_USERNAME` defaults to empty
+- `TASKFORGE_REDIS_PASSWORD` defaults to empty
+- `TASKFORGE_REDIS_DB` defaults to `0` for CLI commands and `15` in Redis integration tests
 
 ## CLI Status
 
-The `demo` command is still the fastest fully self-contained path.
-
-The CLI now accepts backend-selection flags for `worker`, `enqueue`, `result`,
-and `dlq`. If you leave the defaults in place, each invocation creates its own
-isolated in-memory state. Those processes do not communicate across process
-boundaries:
+The CLI now follows a single default runtime model:
 
 ```bash
 ./bin/taskforge worker
 ./bin/taskforge enqueue -name echo -payload '{"msg":"hello"}'
-./bin/taskforge result -id <task-id>
+./bin/taskforge result -id <task-id-or-prefix>
 ```
 
-That means, with default memory settings:
+By default, those commands use Redis for broker, result, DLQ, and idempotency
+state, so separate processes share the same runtime data.
 
-- `worker` cannot consume tasks created by a separate `enqueue` process
-- `result` cannot see results created by a separate worker process
-- `dlq` inspection only sees entries created in the same process
-- duplicate enqueue protection is only shared across processes when the
-  idempotency backend is also configured to use Redis
-- for real end-to-end shared-state behavior, configure Redis-backed broker,
-  result, DLQ, and idempotency backends
+The `result` command resolves exact task IDs and unique prefixes. If a prefix
+matches more than one result ID, the command exits with an ambiguity error.
+
+For isolated local experiments, you can still force in-memory behavior:
+
+```bash
+./bin/taskforge worker -broker-backend memory -result-backend memory
+./bin/taskforge enqueue -broker-backend memory -result-backend memory -name echo
+```
+
+The `demo` command remains the fastest fully self-contained in-memory path.
 
 ## Using It As a Library
 

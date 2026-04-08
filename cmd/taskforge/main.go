@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -43,21 +44,26 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `
-Taskforge – in-process task execution platform (prototype)
+Taskforge – background job execution platform
 
 Usage:
   taskforge <command> [flags]
 
 Commands:
-  demo      Run a self-contained in-process demonstration (recommended)
-  worker    [scaffolding] Start an in-process worker (ephemeral, not cross-process)
-  enqueue   [scaffolding] Enqueue a task into a private in-process broker
-  result    [scaffolding] Retrieve a result from a private in-process store
+  demo      Run a self-contained in-process demonstration
+  worker    Start a worker process (Redis-backed by default)
+  enqueue   Enqueue a task (Redis-backed by default)
+  result    Retrieve a task result by ID or unique prefix (Redis-backed by default)
   dlq       Inspect dead-lettered tasks
 
-NOTE: worker, enqueue, and result each create their own isolated in-memory
-      broker, result, DLQ, and idempotency backend. They do not share state
-      across processes. Use 'demo' for a fully functional end-to-end example.
+Golden path:
+  docker compose up -d redis
+  taskforge worker
+  taskforge enqueue -name echo -payload '{"msg":"hello"}'
+  taskforge result -id <task-id-or-prefix>
+
+Use -broker-backend memory -result-backend memory for isolated in-process
+experimentation. The demo command always uses in-memory components.
 `)
 }
 
@@ -75,15 +81,15 @@ type backendFlags struct {
 func bindBackendFlags(fs *flag.FlagSet, includeBroker bool) backendFlags {
 	flags := backendFlags{}
 	if includeBroker {
-		flags.brokerBackend = fs.String("broker-backend", string(taskforge.BackendMemory), "broker backend: memory or redis")
+		flags.brokerBackend = fs.String("broker-backend", string(taskforge.BackendRedis), "broker backend: memory or redis")
 	}
-	flags.resultBackend = fs.String("result-backend", string(taskforge.BackendMemory), "result backend: memory or redis")
+	flags.resultBackend = fs.String("result-backend", string(taskforge.BackendRedis), "result backend: memory or redis")
 	flags.dlqBackend = fs.String("dlq-backend", "", "dlq backend: memory or redis (defaults to result backend)")
 	flags.idemBackend = fs.String("idempotency-backend", "", "idempotency backend: memory or redis (defaults to result backend)")
-	flags.redisAddr = fs.String("redis-addr", "127.0.0.1:6379", "Redis address")
-	flags.redisUsername = fs.String("redis-username", "", "Redis username")
-	flags.redisPassword = fs.String("redis-password", "", "Redis password")
-	flags.redisDB = fs.Int("redis-db", 0, "Redis database index")
+	flags.redisAddr = fs.String("redis-addr", envOrDefault("TASKFORGE_REDIS_ADDR", "127.0.0.1:6379"), "Redis address")
+	flags.redisUsername = fs.String("redis-username", envOrDefault("TASKFORGE_REDIS_USERNAME", ""), "Redis username")
+	flags.redisPassword = fs.String("redis-password", envOrDefault("TASKFORGE_REDIS_PASSWORD", ""), "Redis password")
+	flags.redisDB = fs.Int("redis-db", envIntOrDefault("TASKFORGE_REDIS_DB", 0), "Redis database index")
 	return flags
 }
 
@@ -137,8 +143,8 @@ func runWorker(args []string) {
 	defer stop()
 
 	log.Printf("taskforge worker: starting (concurrency=%d queue=%s)", *concurrency, *queue)
-	if cfg.BrokerBackend == taskforge.BackendMemory && cfg.ResultBackend == taskforge.BackendMemory {
-		log.Printf("NOTE: using in-memory broker/result backend — state is not shared with other processes; use 'demo' for a fully functional example")
+	if cfg.BrokerBackend == taskforge.BackendRedis || cfg.ResultBackend == taskforge.BackendRedis {
+		log.Printf("taskforge worker: redis=%s db=%d", cfg.Redis.Addr, cfg.Redis.DB)
 	}
 	if err := app.StartWorker(ctx); err != nil {
 		log.Fatalf("taskforge worker: %v", err)
@@ -163,9 +169,6 @@ func runEnqueue(args []string) {
 	cfg := cliConfig()
 	cfg.DefaultQueue = *queue
 	cfg = backend.apply(cfg)
-	if cfg.BrokerBackend == taskforge.BackendMemory && cfg.ResultBackend == taskforge.BackendMemory {
-		log.Printf("NOTE: enqueue uses an ephemeral in-memory broker/result backend; the task ID printed below is not visible to any other process")
-	}
 	app, err := taskforge.Open(cfg)
 	if err != nil {
 		log.Fatalf("enqueue: %v", err)
@@ -189,7 +192,7 @@ func runEnqueue(args []string) {
 
 func runResult(args []string) {
 	fs := flag.NewFlagSet("result", flag.ExitOnError)
-	id := fs.String("id", "", "task ID (required)")
+	id := fs.String("id", "", "task ID or unique prefix (required)")
 	backend := bindBackendFlags(fs, true)
 	_ = fs.Parse(args)
 
@@ -200,9 +203,6 @@ func runResult(args []string) {
 
 	cfg := cliConfig()
 	cfg = backend.apply(cfg)
-	if cfg.BrokerBackend == taskforge.BackendMemory && cfg.ResultBackend == taskforge.BackendMemory {
-		log.Printf("NOTE: result uses an ephemeral in-memory store; it will always return 'not found' for IDs produced by other processes")
-	}
 	app, err := taskforge.Open(cfg)
 	if err != nil {
 		log.Fatalf("result: %v", err)
@@ -210,7 +210,11 @@ func runResult(args []string) {
 	defer app.Close() //nolint:errcheck
 
 	ctx := context.Background()
-	r, err := app.GetResult(ctx, *id)
+	resolvedID, err := app.ResolveResultID(ctx, *id)
+	if err != nil {
+		log.Fatalf("result: %v", err)
+	}
+	r, err := app.GetResult(ctx, resolvedID)
 	if err != nil {
 		log.Fatalf("result: %v", err)
 	}
@@ -422,5 +426,33 @@ func runDemo() {
 }
 
 func cliConfig() taskforge.Config {
-	return taskforge.DefaultConfig()
+	cfg := taskforge.DefaultConfig()
+	cfg.BrokerBackend = taskforge.BackendRedis
+	cfg.ResultBackend = taskforge.BackendRedis
+	cfg.DLQBackend = taskforge.BackendRedis
+	cfg.IdempotencyBackend = taskforge.BackendRedis
+	cfg.Redis.Addr = envOrDefault("TASKFORGE_REDIS_ADDR", cfg.Redis.Addr)
+	cfg.Redis.Username = envOrDefault("TASKFORGE_REDIS_USERNAME", cfg.Redis.Username)
+	cfg.Redis.Password = envOrDefault("TASKFORGE_REDIS_PASSWORD", cfg.Redis.Password)
+	cfg.Redis.DB = envIntOrDefault("TASKFORGE_REDIS_DB", cfg.Redis.DB)
+	return cfg
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envIntOrDefault(key string, fallback int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return value
 }
