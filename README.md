@@ -8,7 +8,7 @@ tracking, DLQ support, and enqueue-time idempotency behind a small API.
 
 The project now supports both in-memory and Redis-backed broker, result, DLQ,
 and idempotency components. The in-memory path is still the default for the
-demo and most unit tests; Redis is used for cross-process integration tests
+demo and most unit tests; Redis integration tests use separate App instances
 and persistent execution flows.
 
 > Status: prototype / work-in-progress.
@@ -26,7 +26,7 @@ Taskforge is influenced by [Celery](https://docs.celeryq.dev),
 |---|---|
 | Task registry | Name-based handlers with JSON payloads |
 | In-memory broker | Queueing plus delayed delivery in one process |
-| In-memory result backend | Result persistence with TTL expiry |
+| In-memory result backend | In-process result storage with TTL expiry |
 | Redis broker | Shared ready/delayed queues with in-flight reservation recovery |
 | Redis result backend | Shared cross-process task result storage |
 | DLQ support | Dead-letter persistence, inspection, replay, and purge |
@@ -249,10 +249,19 @@ id, err := app.Enqueue(ctx, "charge_customer", payload,
 )
 ```
 
-Later enqueue calls with the same idempotency key return the same canonical
-task ID and do not admit duplicate work.
+Later enqueue calls sharing the same idempotency backend and key return the
+original task ID, even when payload, task name or queue differs. Keys do not expire;
+include business/tenant identity in the key as needed. Claiming and enqueueing are
+separate operations, so this is not crash-atomic admission or exactly-once execution.
+
+共享同一幂等后端时，同键复用原 ID，即使负载、任务名或队列不同。键不会自动过期，
+应按需包含业务及租户标识；认领与入队分开执行，不保证崩溃时原子提交或恰好执行一次。
 
 ### Periodic tasks / 周期任务
+
+Fixed intervals are supported; cron and durable periodic schedules are not.
+
+支持固定间隔；尚不支持 cron 或周期调度状态的持久化。
 
 ```go
 app.AddSchedule("heartbeat", "ping", "default", 1*time.Minute, nil)
@@ -261,14 +270,14 @@ go app.StartScheduler(ctx)
 
 ## Project Layout / 项目结构
 
-> 中文说明：cmd/taskforge 是 CLI 入口，pkg/taskforge 提供公开 API；internal 下按任务模型、队列、工作池、调度和结果存储划分职责。除下方目录外，internal/dlq 提供死信存储，internal/redis 封装 Redis 连接设置；broker 和 result 均已有内存与 Redis 实现。
+> 中文说明：cmd/taskforge 是 CLI 入口，pkg/taskforge 提供公开 API；internal 下按任务模型、队列、工作池、调度和结果存储划分职责。internal/dlq 提供死信存储，internal/idempotency 提供提交去重，internal/redis 封装 Redis 连接设置；broker 和 result 均已有内存与 Redis 实现。
 
 ```text
 cmd/taskforge/       CLI entry point
-internal/broker/     Broker interface + in-memory implementation
+internal/broker/     Broker interface + memory/Redis implementations
 internal/dlq/        Dead-letter queue backends
 internal/idempotency/ Enqueue idempotency backends
-internal/result/     Result backend interface + in-memory implementation
+internal/result/     Result interface + memory/Redis implementations
 internal/scheduler/  Periodic task scheduler
 internal/task/       Message types, retry policy, handler registry
 internal/worker/     Worker pool and execution loop
@@ -280,6 +289,7 @@ pkg/taskforge/       Public API
 - [Workflow Diagram](./WORKFLOW.md)
 - [Architecture](./ARCHITECTURE.md)
 - [Milestones](./MILESTONES.md)
+- [Idempotency hardening proposal / 幂等性增强提案](./docs/IDEMPOTENCY.md)
 
 ## Roadmap / 后续计划
 

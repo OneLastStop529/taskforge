@@ -81,12 +81,16 @@ Taskforge now supports two operating modes:
 - stores execution results and task status
 - implementations: memory and Redis
 
-#### DLQ Backend
+#### DLQ Backend / 死信后端
+
+> 中文说明：保存最终失败的任务及检查、重放所需信息，支持内存和 Redis。
 
 - stores terminal failure inspection records
 - implementations: memory and Redis
 
-#### Idempotency Backend
+#### Idempotency Backend / 提交幂等后端
+
+> 中文说明：按调用方提供的键认领或复用任务 ID，支持内存和 Redis。
 
 - stores enqueue-time claim-or-reuse records keyed by caller-supplied strings
 - implementations: memory and Redis
@@ -95,12 +99,12 @@ Taskforge now supports two operating modes:
 
 > 中文说明：当前周期调度器运行于本地进程，按固定间隔提交任务。单次延迟任务通过消息中的计划执行时间交由 Broker 处理；两者的持久化边界不同。
 
-- supports delayed or periodic task submission
+- submits periodic tasks at fixed intervals; the broker handles one-off delays
 - current implementation is local and process-bound
 
 ### Current component diagram / 当前组件关系图
 
-> 中文说明：下图说明 App 与主要组件的组装关系。图中尚未包含当前已实现的独立死信存储组件。
+> 中文说明：下图说明 App 与主要组件的组装关系。图中包含死信与提交幂等存储组件。
 
 ```text
 +------------------+
@@ -199,7 +203,7 @@ RUNNING
 
 > 中文说明：处理函数成功返回；工作进程随后尝试保存结果并确认队列消息。
 
-- task completed successfully and result has been persisted
+- handler completed successfully; the worker attempts to persist the result
 
 #### FAILED / 最终失败
 
@@ -257,7 +261,7 @@ The worker runtime is the core of the system.
 - dequeue messages from the broker
 - look up the registered task handler
 - execute the handler with task payload
-- enforce per-task timeout
+- pass a per-task context deadline for cooperative cancellation
 - recover from panics
 - store result and task status
 - requeue tasks on retryable failure
@@ -266,17 +270,18 @@ The worker runtime is the core of the system.
 
 > 中文说明：获取消息后写入 RUNNING，查找并执行处理函数。成功时写入 SUCCESS 并确认消息；可重试时写入 RETRYING，提交延迟重试消息后确认原消息；耗尽尝试次数时写入 FAILED，尝试保存死信记录，再确认消息。
 
-1. Dequeue message from broker
-2. Mark task as `RUNNING`
-3. Resolve handler from registry
-4. Execute handler
-5. Apply timeout / panic recovery
-6. If success:
-   persist `SUCCESS` result
-7. Else if retryable:
-   mark `RETRYING` and re-enqueue
-8. Else:
-   persist `FAILED` result
+1. Dequeue a message and acquire worker capacity.
+2. Attempt to write `RUNNING` and resolve the handler.
+3. Create a timeout context if configured, then execute with panic recovery.
+4. On success: attempt to save `SUCCESS`, then acknowledge.
+5. On retryable failure: attempt to save `RETRYING`, enqueue the next attempt,
+   then acknowledge the original delivery if enqueue succeeded.
+6. On terminal failure: attempt to save `FAILED` and the DLQ entry, then acknowledge.
+
+Result writes, DLQ writes and acknowledgment are separate operations. Some write
+errors are ignored or only logged; this is not an atomic completion protocol.
+
+结果、死信和确认是独立操作；部分写入错误仅被忽略或记录日志，目前不具备原子完成协议。
 
 ### Worker flow diagram / 工作池流程图
 
@@ -324,7 +329,7 @@ The worker runtime is the core of the system.
 
 ## 5. Current Limitations / 5. 当前限制
 
-> 中文说明：本节部分限制描述的是早期内存原型。内存数据仍随进程退出而丢失，但 Redis 已提供共享队列、延迟消息、确认及租约恢复机制；这并不等于系统已具备完整的生产可靠性保障。
+> 中文说明：本节区分内存后端限制与当前运行时的可靠性缺口。内存数据仍随进程退出而丢失，但 Redis 已提供共享队列、延迟消息、确认及租约恢复机制；这并不等于系统已具备完整的生产可靠性保障。
 
 The current implementation is intentionally small and useful as a runtime
 scaffold, but it has important limitations.
@@ -360,7 +365,8 @@ Scheduling is local to one running process.
 
 Implications:
 
-- no durable delayed task scheduling
+- periodic schedule definitions and next-run state are not persisted
+- one-off delayed tasks are stored by the Redis broker when selected
 - no distributed coordination
 - no failover
 
@@ -371,20 +377,23 @@ Implications:
 The current queue model is suitable for a prototype but not yet for a
 production-style broker.
 
-Missing areas include:
+Remaining gaps include:
 
-- durable persistence
-- acknowledgment protocol
-- visibility timeout / lease semantics
-- dead-letter queues
+- renewable leases and unique delivery receipts (current leases default to 30 seconds)
+- atomic enqueue with idempotency claim, and atomic retry/completion transitions
+- protection against stale workers and duplicate handler side effects
 - queue prioritization guarantees
+
+Redis already provides shared ready/delayed queues, reservations, acknowledgment
+and expiry recovery. DLQ storage is implemented separately. Redis restart durability
+depends on server configuration; these features do not imply exactly-once execution.
 
 ## 6. Target Architecture / 6. 目标架构
 
 > 中文说明：目标是在现有 Redis 多进程能力之上，引入 API 服务、可扩展的工作进程集群和更完善的运维能力。图中的 API 服务及其他候选存储不代表当前已有实现。
 
-The next major step is to evolve Taskforge into a multi-process distributed
-system backed by persistent infrastructure.
+The target extends the existing Redis-backed multi-process runtime with an API
+service, stronger failure recovery, observability and deployment automation.
 
 ### Target component model / 目标组件模型
 
@@ -486,8 +495,8 @@ Status / Result Query
 
 > 中文说明：重试应表示为可存储的状态与消息：计算下次时间，记录尝试信息，经过退避后再次入队。当前 Redis 路径已经在消息中保存尝试次数与计划时间，但完整的故障一致性仍需持续完善。
 
-Instead of immediate in-process retry, retries should be modeled as durable
-state transitions.
+Retries already use delayed messages with attempt metadata. The next improvement
+is to make retry publication and acknowledgment a recoverable atomic transition.
 
 ```text
 FAILED ATTEMPT
@@ -566,34 +575,33 @@ Tradeoff:
 
 > 中文说明：Redis 队列和结果后端已落地，下一步可完善可靠性、调度与工作流语义。PostgreSQL 结果后端仍是可选的未来方向。
 
-For Taskforge, the best next step is:
-
-- Redis broker
-- Redis or PostgreSQL result backend
-- later introduce more advanced scheduling / workflow semantics
+Redis broker and result backends are implemented. Next steps are reliability
+hardening and observability; PostgreSQL, advanced scheduling and workflows remain
+future options.
 
 ## 9. Queue Model / 9. 队列消息模型
 
 > 中文说明：消息需要携带任务标识、处理函数名称、负载、队列、重试与调度信息，以支持跨进程交付和恢复。
 
-A task broker message should eventually contain enough metadata for durable
-execution.
+Task messages already carry retry, scheduling and idempotency metadata.
 
 ### Example message shape / 消息结构示意
 
-> 中文说明：下方是概念示例，不是当前 Go 类型的逐字段定义。实际字段以 internal/task/task.go 为准，例如当前使用 Name、RetryPolicy 和 time.Time 类型的 ScheduledAt。
+> 中文说明：下方摘录当前 internal/task/task.go 中的 Message，包含重试策略、计划时间与提交幂等键。
 
 ```go
 type Message struct {
-    ID          string
-    TaskName    string
-    Payload     []byte
-    Queue       string
-    Priority    int
-    Attempt     int
-    MaxRetries  int
-    EnqueuedAt  time.Time
-    ScheduledAt *time.Time
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Payload        json.RawMessage `json:"payload"`
+	Queue          string          `json:"queue"`
+	Priority       int             `json:"priority"`
+	Attempt        int             `json:"attempt"`
+	RetryPolicy    RetryPolicy     `json:"retry_policy"`
+	ScheduledAt    time.Time       `json:"scheduled_at"`
+	EnqueuedAt     time.Time       `json:"enqueued_at"`
+	Timeout        time.Duration   `json:"timeout"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 }
 ```
 
@@ -621,17 +629,18 @@ operations.
 
 ### Example result shape / 结果结构示意
 
-> 中文说明：下方类型用于解释概念。当前实际结构使用 ID、State 和 json.RawMessage 类型的 Output 等字段，应以 internal/task/task.go 为准。
+> 中文说明：下方摘录当前 internal/task/task.go 中的 Result，保存最新结果与执行元数据。
 
 ```go
 type Result struct {
-    TaskID      string
-    Status      string
-    Output      []byte
-    Error       string
-    Attempt     int
-    StartedAt   time.Time
-    FinishedAt  time.Time
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	State      State           `json:"state"`
+	Output     json.RawMessage `json:"output,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Attempt    int             `json:"attempt"`
+	StartedAt  time.Time       `json:"started_at"`
+	FinishedAt time.Time       `json:"finished_at"`
 }
 ```
 
@@ -791,148 +800,35 @@ implemented for the current architecture.
 
 Status: implemented for memory and Redis backends.
 
-Why this is the highest-ROI next step:
+Delivered:
 
-- the Redis broker and result backend already preserve shared state
-- retries are implemented, so the next gap is operator handling of permanent
-  failure
-- DLQ support improves reliability immediately without forcing a larger
-  execution-model redesign
+- memory and Redis DLQ backends with list/get/replay/purge APIs and CLI commands
+- terminal `FAILED` results plus separate DLQ inspection records
+- replay under a fresh task ID, retaining the original record and recording replay
+  count, last replay ID and timestamp
+- unit and live Redis tests using separate App instances
 
-Implemented milestone 6 shape:
+Bulk purge and richer replay-resolution workflows remain future work. DLQ writes
+are not atomic with result persistence and broker acknowledgment.
 
-1. Add a DLQ storage boundary
-
-- introduce a dedicated interface for DLQ persistence and inspection rather
-  than folding dead-letter data into the broker API
-- keep broker responsibilities focused on delivery and reservation semantics
-- keep result backend responsibilities focused on latest task outcome lookup
-
-2. Define the first DLQ entry shape
-
-- store the original `task.Message` payload so operators can inspect what ran
-- add final failure fields such as terminal error text, exhausted attempt
-  number, and failure time
-- include queue and retry policy metadata so later replay tooling does not need
-  to reconstruct context from logs
-
-3. Wire worker finalization to DLQ persistence
-
-- on success: write `SUCCESS` result and ack as today
-- on retryable failure: write `RETRYING`, re-enqueue, and do not touch the DLQ
-- on retry exhaustion: write the terminal result, persist the DLQ entry, then
-  ack the broker reservation
-
-4. Expose operator inspection and replay surfaces
-
-- add library methods to list DLQ entry IDs and fetch a single entry
-- add CLI inspection commands once the library contract is stable
-- support replay by re-enqueuing the stored task envelope under a fresh task ID
-- defer replay-resolution metadata, bulk purge, and richer requeue workflows
-
-5. Verify with the existing Redis integration model
-
-- reuse the separate producer / worker / inspector app pattern already used for
-  Redis result integration tests
-- prove terminal failures become visible to another process through the DLQ
-  backend
-- prove successful and still-retrying tasks never produce DLQ entries
-- prove a different process can replay a DLQ entry through shared Redis state
-
-Key design choices in the current cut:
-
-- keep the public task result state as `FAILED` on terminal failure and treat
-  the DLQ as an additional inspection record, not a replacement result path
-- replay allocates a new task ID instead of mutating the terminally failed task
-- retain the original DLQ record after replay for audit and inspection
-- defer introducing a public `DEAD_LETTERED` runtime state until the project
-  needs distinct operator semantics beyond terminal failure lookup
+批量清除及更丰富的重放处理流程仍待实现；死信写入、结果保存和消息确认目前不是原子操作。
 
 #### Milestone 7: Persistence Layer / 里程碑 7：持久化层
 
-> 中文说明：Redis 实现提供共享结果和就绪、延迟、执行中队列，以及确认和租约恢复；PostgreSQL 和 NATS 尚未实现。
+> 中文说明：Redis 已提供共享队列与结果存储、延迟消息、预留确认和租约恢复。PostgreSQL、NATS 及完整故障一致性仍待实现。
 
 Status: implemented for the Redis path.
 
-Recommended implementation order:
+- `Config` selects memory or Redis backends when `App` is constructed.
+- Redis broker stores ready/delayed messages and supports in-flight reservations,
+  acknowledgment and lease-expiry recovery.
+- Redis results preserve the configured TTL and are shared across App instances.
+- Compose starts Redis only; an API service and full deployment stack are not present.
+- Integration tests cover shared state and delayed work across worker restarts using
+  separate App instances in one test process.
 
-- introduce Redis-backed broker
-- make worker, enqueue, and result share real state
-- add durable retry metadata
-- add dead-letter queue support
-- add metrics and health endpoints
-
-This milestone turns Taskforge from a runtime demo into a real multi-process
-system.
-
-Implemented shape:
-
-- `pkg/taskforge.Config` now supports backend selection and Redis connection
-  settings
-- `internal/result.RedisBackend` provides shared result storage across app
-  instances
-- `internal/broker.RedisBroker` provides ready queues, delayed queues,
-  in-flight reservation, `Ack`, and lease-expiry recovery
-- live Redis integration tests verify separate app instances can enqueue,
-  process, and read results through shared state
-
-Planning notes that remain useful for follow-on milestones:
-
-- `internal/broker` already defines the transport boundary; add `RedisBroker`
-  beside `MemoryBroker` rather than changing the interface first
-- `internal/result` already defines the result storage boundary; add
-  `RedisBackend` with the same `SetResult` and `GetResult` contract
-- `pkg/taskforge.App` currently hardwires memory backends in `New`; add config
-  and constructors so backend selection happens at app construction time
-- `internal/worker` can stay mostly unchanged if broker dequeue semantics remain
-  blocking and retries continue to be represented as re-enqueued `task.Message`
-- `internal/task.Message` already contains retry and scheduling metadata, so the
-  first persistence pass should preserve this schema and avoid a larger task
-  model redesign
-
-Recommended scope split:
-
-1. Wiring
-
-- extend `taskforge.Config` with backend choice and Redis connection settings
-- add constructors for memory and Redis-backed apps
-- keep the current default as in-memory so existing tests and examples stay
-  stable
-
-2. Redis result backend
-
-- store results by task ID
-- preserve TTL behavior where configured
-- support `PENDING`, `RUNNING`, `RETRYING`, `SUCCESS`, and `FAILED` states
-- ensure serialized results are readable across separate processes
-
-3. Redis broker
-
-- immediate queue for ready tasks
-- delayed queue or sorted-set schedule for future tasks
-- blocking dequeue for workers
-- explicit ack path, even if the first Redis implementation uses a simpler
-  reservation model
-
-4. Retry and failure durability
-
-- persist incremented attempt counts in the broker payload
-- keep failure error text and timestamps in the result backend
-- leave a clear hook for moving terminal failures into a DLQ keyspace
-
-5. Verification
-
-- add integration coverage for separate enqueue, worker, and result app
-  instances sharing Redis
-- verify delayed tasks and retries continue after worker restart
-- document the operational constraint shift in `README.md`
-
-Non-goals for the first milestone 7 cut:
-
-- PostgreSQL and NATS support
-- metrics and health endpoints
-- full DLQ inspection CLI
-- task deduplication and locking
+Redis persistence depends on the Redis server configuration. PostgreSQL and NATS
+are unimplemented; metrics and health endpoints belong to later milestones.
 
 #### Milestone 8: Idempotency / 里程碑 8：幂等性
 
@@ -953,14 +849,14 @@ Implemented shape:
 Verification:
 
 - package tests cover canonical reuse, rollback, and in-process race behavior
-- Redis integration tests cover cross-process duplicate enqueue and replay
-  interaction
+- Redis integration tests cover duplicate enqueue and replay across separate App
+  instances in one process; independent-process crash testing remains future work
 
 ### Next recommended milestone / 下一步建议
 
 > 中文说明：下一阶段建议实现结构化日志，为排查重试、租约恢复与幂等复用提供清晰事件记录。
 
-#### Milestone 9: Structured Logging
+#### Milestone 9: Structured Logging / 里程碑 9：结构化日志
 
 Status: next open milestone.
 
@@ -988,8 +884,8 @@ Taskforge currently provides:
 
 Taskforge does not yet provide:
 
-- durable queueing
-- shared multi-process state
+- atomic claim-and-enqueue or retry/completion transactions
+- renewable worker leases or exactly-once external side effects
 - production-grade observability
 - cloud-native deployment
 

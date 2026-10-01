@@ -1,6 +1,6 @@
 # Idempotency hardening proposal / 幂等性增强方案
 
-Status: follow-on proposal, updated against current main. Milestone 8 already
+Status: follow-on proposal, checked against the current implementation. Milestone 8 already
 implements optional enqueue keys with memory/Redis claim-or-reuse storage and CLI
 support. Keys currently have no expiry or scope beyond the key string; changed
 payloads reuse the existing ID. The stronger semantics below are proposed changes,
@@ -42,6 +42,13 @@ business operation's stable key or a transaction in the destination system.
 
 当前需要同时处理重复提交、结果状态回退、预留身份不唯一、租约缺少续期，以及
 重试和结果保存过程中的崩溃窗口。单独增加一个 Redis 锁不能覆盖这些问题。
+
+Current replay calls `enqueueMessage` directly after clearing the original key.
+Passing a new key through replay options does not currently claim that key; the
+new-key replay policy below requires an implementation change.
+
+当前重放清除原键后直接调用 enqueueMessage；即使选项带入新键，也不会认领该键。
+下方按新键去重的重放策略属于待实现行为。
 
 ## Proposed public contract / 建议的公开契约
 
@@ -204,5 +211,5 @@ write the storage transition interfaces and crash-state table: every interrupted
 operation must have an explicit recovery path. These are implementation review
 checkpoints, not additional user-approval gates.
 
-实施前明确编码、配置和状态转换；对每个中断点列出恢复路径。先交付 阶段 A，再完成
-阶段 B 和 阶段 C，最后按 阶段 D 验收整个里程碑。
+实施前明确编码、配置和状态转换；对每个中断点列出恢复路径。先交付阶段 A，再完成
+阶段 B 和阶段 C，最后按阶段 D 验收本增强方案。
