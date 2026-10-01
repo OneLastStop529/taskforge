@@ -252,7 +252,6 @@ func TestRedisIntegration_ReplayDLQEntryAcrossApps(t *testing.T) {
 	workerApp.Register("toggle_fail", func(_ context.Context, payload []byte) ([]byte, error) {
 		mu.Lock()
 		fail := shouldFail
-		shouldFail = false
 		mu.Unlock()
 		if fail {
 			return nil, context.DeadlineExceeded
@@ -283,6 +282,12 @@ func TestRedisIntegration_ReplayDLQEntryAcrossApps(t *testing.T) {
 	if reusedID != originalID {
 		t.Fatalf("got duplicate enqueue id %q, want original id %q", reusedID, originalID)
 	}
+
+	// Final result persistence precedes DLQ persistence in the worker.
+	waitForDLQEntry(t, inspectorApp, originalID)
+	mu.Lock()
+	shouldFail = false
+	mu.Unlock()
 
 	replayID, err := inspectorApp.ReplayDLQEntry(context.Background(), originalID)
 	if err != nil {
