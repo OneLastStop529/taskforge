@@ -263,6 +263,13 @@ Scope
 
 Add optional enqueue-time idempotency keyed by a caller-supplied string.
 
+Enqueue idempotency is implemented. The [bilingual follow-on design](docs/IDEMPOTENCY.md)
+proposes stronger atomic publication, conflict detection, retention and worker
+ownership guarantees beyond this milestone's delivered scope.
+
+提交幂等已实现。[双语后续方案](docs/IDEMPOTENCY.md)讨论原子发布、冲突检测、
+保留策略与工作进程所有权，属于当前里程碑之外的增强规划。
+
 Features:
 
 - idempotency key on enqueue
